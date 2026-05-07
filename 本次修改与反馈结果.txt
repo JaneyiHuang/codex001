@@ -1,0 +1,355 @@
+# 这是我找到的关于剪枝的代码和说明，借鉴他的思想完成对我这篇论文想要实现的剪枝模块，你还记得之前我跟你说的我想做的剪枝是怎么样的吗？
+
+
+记得大方向：你之前想做的是**对训练好的 MAPPO 模型做轻量化剪枝**，重点不是重新设计 RL 算法，而是压缩部署时真正参与决策的 **actor 网络**，然后比较：
+
+```text
+原始 MAPPO actor
+剪枝 MAPPO actor
+基线策略
+```
+
+指标包括：
+
+```text
+平均时延
+丢弃率
+卸载率
+reward
+参数量
+推理时间
+```
+
+我已经按你发的参考代码思想实现了第一版剪枝模块。
+
+新增文件：
+
+- [prune_mappo_actor.py](D:/ZJUT/miniPaper/Code/codex001/prune_mappo_actor.py)：按隐藏层神经元 L1 范数剪枝，并转移权重
+- [experiments/pruned_mappo_policy.py](D:/ZJUT/miniPaper/Code/codex001/experiments/pruned_mappo_policy.py)：加载剪枝后的 actor 做实验对比
+- [compare_experiments.py](D:/ZJUT/miniPaper/Code/codex001/compare_experiments.py)：已注册 `pruned_mappo`
+
+现在可以这样剪枝：
+
+```powershell
+python prune_mappo_actor.py --pruning-percentage 0.25
+```
+
+会生成：
+
+```text
+results\mappo_actor_pruned.pt
+```
+
+我刚才测试的 25% 剪枝结果是：
+
+```text
+隐藏层: [128, 128] -> [96, 96]
+参数量: 18178 -> 10562
+压缩率: 1.721x
+```
+
+然后可以统一对比：
+
+```powershell
+python compare_experiments.py --experiments mappo,pruned_mappo,offload,greedy --episodes 50
+```
+
+或者负载扫描：
+
+```powershell
+python compare_experiments.py --mode loads --experiments mappo,pruned_mappo,offload,greedy --episodes 50
+```
+
+需要注意：现在实现的是**剪枝后直接评估**，还没有加“剪枝后微调 / 知识蒸馏”。你发的参考代码里剪枝后还继续训练了一段，所以后面如果想让性能更稳，下一步应该加 `fine_tune_pruned_actor.py` 或者做 MAPPO actor 蒸馏。
+
+
+
+
+# 加一个蒸馏吧，我看原作者他有整流模块
+
+
+我先把当前剪枝/对比入口和模型结构再核一下，顺便确认现在只有剪枝、还没有蒸馏训练入口。这样我们可以把“蒸馏模块”规划成能直接接到你现有 pruned_mappo 对比里的版本。
+
+Ran 4 commands
+现在的结构很清楚：剪枝已经是“teacher actor -> L1 神经元筛选 -> student/pruned actor 权重继承 -> 直接评估”。蒸馏要补的是“让小 actor 再学习原 actor 的动作分布”，这样剪枝后性能更稳。这里有个关键选择会影响论文表述和实现复杂度，我问你一个决策点。
+
+已询问 1 个问题
+已处理 26s
+好，那就锁定“策略蒸馏”：teacher 是原始 MAPPO actor，student 是剪枝后的 actor，用 KL 散度让 student 学 teacher 的 logits/概率分布。还剩一个会明显影响效果的点：蒸馏数据从哪里来。
+
+
+# MAPPO Actor 剪枝后的知识蒸馏模块计划
+
+## Summary
+新增一个“剪枝后蒸馏”流程：以原始 MAPPO actor 作为 teacher，以剪枝后的 actor 作为 student，通过 teacher 在环境中采集到的真实观测 `obs` 训练 student 拟合 teacher 的动作概率分布。目标是让剪枝模型在保持参数量/推理速度优势的同时，性能更接近原始 MAPPO。
+
+默认采用你确认的方案：
+
+- 蒸馏方式：策略蒸馏，使用 KL 散度拟合 teacher/student logits 分布
+- 数据来源：teacher MAPPO 在环境中 rollout 收集真实 obs
+- 蒸馏对象：只蒸馏 actor，不蒸馏 critic，因为部署和推理决策只需要 actor
+
+## Key Changes
+- 新增 `distill_mappo_actor.py`
+  - 加载 teacher：`results/mappo_checkpoint.pt`
+  - 加载 student 初始模型：`results/mappo_actor_pruned.pt`
+  - 用 teacher 在 `MECEnv` 中运行若干 episode，收集所有 agent 的 obs
+  - 用 teacher actor 输出 soft targets，训练 student actor
+  - 保存蒸馏后的模型到：`results/mappo_actor_pruned_distilled.pt`
+
+- 蒸馏训练默认参数
+  - `--collect-episodes 100`
+  - `--epochs 30`
+  - `--batch-size 512`
+  - `--lr 1e-4`
+  - `--temperature 2.0`
+  - `--val-ratio 0.1`
+  - 损失函数：`KL(student_logits / T, teacher_logits / T) * T^2`
+  - 额外记录：train loss、val loss、teacher-student action agreement
+
+- 修改统一对比入口 `compare_experiments.py`
+  - 新增实验名：`distilled_mappo`
+  - 新增参数：`--distilled-model-path`
+  - 支持统一运行：
+    ```powershell
+    python compare_experiments.py --experiments mappo,pruned_mappo,distilled_mappo,offload,greedy --episodes 50
+    ```
+
+- 调整剪枝策略加载器
+  - 将当前 `PrunedMAPPOPolicy` 改成可传入 `policy_name`
+  - `pruned_mappo` 和 `distilled_mappo` 复用同一个压缩 actor 加载逻辑，只是模型路径和展示名称不同
+
+## Test Plan
+- 静态检查
+  - `python -B -c "import distill_mappo_actor; import compare_experiments"`
+  - 确认新增脚本和策略注册无导入错误
+
+- 快速功能测试
+  - 先生成剪枝模型：
+    ```powershell
+    python prune_mappo_actor.py --pruning-percentage 0.25
+    ```
+  - 快速蒸馏：
+    ```powershell
+    python distill_mappo_actor.py --collect-episodes 2 --epochs 1 --save-path results\mappo_actor_pruned_distilled.pt
+    ```
+  - 快速对比：
+    ```powershell
+    python compare_experiments.py --experiments mappo,pruned_mappo,distilled_mappo --episodes 1
+    ```
+
+- 正式实验建议
+  - 固定场景：
+    ```powershell
+    python compare_experiments.py --experiments mappo,pruned_mappo,distilled_mappo,offload,greedy --episodes 50
+    ```
+  - 不同负载：
+    ```powershell
+    python compare_experiments.py --mode loads --experiments mappo,pruned_mappo,distilled_mappo,offload,greedy --episodes 50 --load-points 13
+    ```
+  - 论文重点比较：参数量、推理时间、平均时延、drop rate、reward、teacher-student action agreement
+
+## Assumptions
+- “整流模块”这里按“知识蒸馏模块”理解，不额外加入 ReLU/激活函数结构改造。
+- 第一版不做环境 reward 微调，只做离线策略蒸馏；这样结果更容易解释为“剪枝 + 蒸馏恢复策略性能”。
+- student 默认从剪枝模型初始化，而不是从小网络随机初始化，因为这更贴近你参考代码的“先剪枝再恢复性能”思路。
+
+
+已实现蒸馏模块，并接进统一对比入口。
+
+新增/修改的核心文件：
+
+- [distill_mappo_actor.py](D:/ZJUT/miniPaper/Code/codex001/distill_mappo_actor.py)：剪枝后 actor 的策略蒸馏脚本
+- [compare_experiments.py](D:/ZJUT/miniPaper/Code/codex001/compare_experiments.py)：新增 `distilled_mappo` 实验名和 `--distilled-model-path`
+- [experiments/pruned_mappo_policy.py](D:/ZJUT/miniPaper/Code/codex001/experiments/pruned_mappo_policy.py)：现在可复用加载 `pruned_mappo` / `distilled_mappo`
+
+我已经跑通了快速验证：
+
+```powershell
+python distill_mappo_actor.py --collect-episodes 2 --epochs 1 --latency-repeats 200 --save-path results\mappo_actor_pruned_distilled.pt
+```
+
+快速结果：
+
+```text
+参数量: 18178 -> 10562
+压缩率: 1.721x
+Val agreement: 0.9438 -> 0.9688
+Val loss: 0.101873 -> 0.088738
+```
+
+也验证了统一对比：
+
+```powershell
+python compare_experiments.py --experiments mappo,pruned_mappo,distilled_mappo --episodes 1
+```
+
+正式跑蒸馏可以用默认参数：
+
+```powershell
+python distill_mappo_actor.py
+```
+
+正式对比：
+
+```powershell
+python compare_experiments.py --experiments mappo,pruned_mappo,distilled_mappo,offload,greedy --episodes 50
+```
+
+不同负载对比：
+
+```powershell
+python compare_experiments.py --mode loads --experiments mappo,pruned_mappo,distilled_mappo,offload,greedy --episodes 50 --load-points 13
+```
+
+运行时出现的 `torch.load` FutureWarning 不影响结果，是 PyTorch 对未来默认安全加载行为的提醒。
+
+
+# 我要如何跑代码进行验证呢？
+
+
+你现在按这个顺序跑就可以验证“原始 MAPPO → 剪枝 → 蒸馏 → 对比实验”。
+
+**1. 先确认有原始 MAPPO 模型**
+
+你已经有这个文件：
+
+```text
+results\mappo_checkpoint.pt
+```
+
+如果没有，就先训练：
+
+```powershell
+python train.py
+```
+
+**2. 生成剪枝模型**
+
+```powershell
+python prune_mappo_actor.py --pruning-percentage 0.25
+```
+
+会生成：
+
+```text
+results\mappo_actor_pruned.pt
+```
+
+**3. 蒸馏剪枝模型**
+
+快速测试版：
+
+```powershell
+python distill_mappo_actor.py --collect-episodes 2 --epochs 1
+```
+
+正式一点的版本：
+
+```powershell
+python distill_mappo_actor.py --collect-episodes 100 --epochs 30
+```
+
+会生成：
+
+```text
+results\mappo_actor_pruned_distilled.pt
+results\mappo_actor_pruned_distilled_log.csv
+```
+
+**4. 固定场景对比**
+
+快速测试：
+
+```powershell
+python compare_experiments.py --experiments mappo,pruned_mappo,distilled_mappo --episodes 1
+```
+
+正式对比：
+
+```powershell
+python compare_experiments.py --experiments mappo,pruned_mappo,distilled_mappo,offload,greedy --episodes 50
+```
+
+结果在：
+
+```text
+results\compare_experiments\comparison_summary.csv
+results\compare_experiments\comparison_dashboard.png
+```
+
+**5. 不同负载对比**
+
+```powershell
+python compare_experiments.py --mode loads --experiments mappo,pruned_mappo,distilled_mappo,offload,greedy --episodes 50 --load-points 13
+```
+
+结果在：
+
+```text
+results\compare_experiments\comparison_loads_summary.csv
+results\compare_experiments\loads_delay.png
+results\compare_experiments\loads_drop_rate.png
+results\compare_experiments\loads_offload_rate.png
+results\compare_experiments\loads_reward.png
+```
+
+最推荐你先跑这一套小验证：
+
+```powershell
+python prune_mappo_actor.py --pruning-percentage 0.25
+python distill_mappo_actor.py --collect-episodes 2 --epochs 1
+python compare_experiments.py --experiments mappo,pruned_mappo,distilled_mappo --episodes 1
+```
+
+确认没问题后，再把 `collect-episodes`、`epochs`、`episodes` 调大。
+
+
+
+
+# 我按照你说的已经运行了，你觉得结果如何？
+
+
+我看了你这次的 [comparison_loads_summary.csv](D:/ZJUT/miniPaper/Code/codex001/results/compare_experiments/comparison_loads_summary.csv) 和 [蒸馏日志](D:/ZJUT/miniPaper/Code/codex001/results/mappo_actor_pruned_distilled_log.csv)，整体结果是**很好的**，尤其是蒸馏模块的效果很明确。
+
+核心平均结果：
+
+```text
+方法              平均时延      平均丢弃率     平均卸载率
+mappo             153.973      0.20005      0.78393
+pruned_mappo      154.113      0.20735      0.76587
+distilled_mappo   153.977      0.20014      0.78390
+offload           166.401      0.07962      1.00000
+greedy            179.497      0.57987      0.26598
+```
+
+我的判断：
+
+**1. 蒸馏非常成功。**  
+直接剪枝后，`pruned_mappo` 的平均时延只比原始 MAPPO 高 `0.14` 左右，但丢弃率从 `0.20005` 增到 `0.20735`。蒸馏后，`distilled_mappo` 几乎完全贴回原始 MAPPO：平均时延 `153.977` vs `153.973`，平均丢弃率 `0.20014` vs `0.20005`。这个结果很适合写成“蒸馏有效恢复剪枝导致的性能损失”。
+
+**2. 负载扫描趋势也很漂亮。**  
+13 个负载点里，`distilled_mappo` 和 `mappo` 的差距基本都在极小范围内，很多点甚至略好一点点。这说明蒸馏不是只在某一个固定负载下有效，而是在轻载到重载变化下都保持了策略行为。
+
+**3. offload 的 drop rate 仍然最低，但时延明显更差。**  
+这和之前一致：`offload` 平均丢弃率只有 `0.0796`，但平均时延 `166.40`，比 MAPPO / distilled MAPPO 高约 `12.4`。所以论文里可以说：全卸载能降低丢弃，但会牺牲长期平均时延；本文目标是最小化长期平均时延，MAPPO 系列在时延上更优。
+
+**4. 蒸馏日志非常能支撑论文。**  
+你的蒸馏训练 30 epoch 后：
+
+```text
+val_loss: 0.004038 -> 0.000074
+val_agreement: 0.9944 -> 0.9987
+```
+
+这说明 student actor 和 teacher actor 的动作选择高度一致。这个可以作为剪枝蒸馏模块的一个辅助指标写进去。
+
+论文里可以这样总结：
+
+> Compared with the directly pruned actor, the distilled pruned actor effectively recovers the policy performance of the original MAPPO actor. Across different task load levels, the distilled model achieves nearly identical average delay and drop rate to the original MAPPO, while maintaining the reduced network size obtained by neuron pruning.
+
+你这组结果已经可以支持“MAPPO + 剪枝 + 蒸馏”这个实验链条了。下一步建议补一个固定场景 summary，因为你当前 `results/compare_experiments` 里只有负载扫描结果，没有 `comparison_summary.csv`。跑这个即可：
+
+```powershell
+python compare_experiments.py --experiments mappo,pruned_mappo,distilled_mappo,offload,greedy --episodes 50
+```

@@ -21,6 +21,7 @@ from experiments.greedy_policy import GreedyPolicy
 from experiments.local_policy import LocalPolicy
 from experiments.mappo_policy import MAPPOPolicy
 from experiments.offload_policy import OffloadPolicy
+from experiments.pruned_mappo_policy import PrunedMAPPOPolicy
 from experiments.random_policy import RandomPolicy
 
 
@@ -31,8 +32,28 @@ def build_mappo(cfg: EnvConfig, args: argparse.Namespace) -> MAPPOPolicy:
     return MAPPOPolicy(cfg, model_path=args.model_path, device=args.device)
 
 
+def build_pruned_mappo(cfg: EnvConfig, args: argparse.Namespace) -> PrunedMAPPOPolicy:
+    return PrunedMAPPOPolicy(
+        cfg,
+        model_path=args.pruned_model_path,
+        device=args.device,
+        policy_name="pruned_mappo",
+    )
+
+
+def build_distilled_mappo(cfg: EnvConfig, args: argparse.Namespace) -> PrunedMAPPOPolicy:
+    return PrunedMAPPOPolicy(
+        cfg,
+        model_path=args.distilled_model_path,
+        device=args.device,
+        policy_name="distilled_mappo",
+    )
+
+
 EXPERIMENTS: Dict[str, PolicyFactory] = {
     "mappo": build_mappo,
+    "pruned_mappo": build_pruned_mappo,
+    "distilled_mappo": build_distilled_mappo,
     "local": lambda cfg, args: LocalPolicy(),
     "offload": lambda cfg, args: OffloadPolicy(),
     "random": lambda cfg, args: RandomPolicy(),
@@ -146,6 +167,17 @@ def parse_args() -> argparse.Namespace:
         "--model-path",
         default=os.getenv("MAPPO_MODEL_PATH", os.path.join("results", "mappo_checkpoint.pt")),
     )
+    parser.add_argument(
+        "--pruned-model-path",
+        default=os.getenv("PRUNED_MAPPO_MODEL_PATH", os.path.join("results", "mappo_actor_pruned.pt")),
+    )
+    parser.add_argument(
+        "--distilled-model-path",
+        default=os.getenv(
+            "DISTILLED_MAPPO_MODEL_PATH",
+            os.path.join("results", "mappo_actor_pruned_distilled.pt"),
+        ),
+    )
     parser.add_argument("--device", default=os.getenv("COMPARE_DEVICE", "cpu"))
     parser.add_argument(
         "--save-dir",
@@ -171,4 +203,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
