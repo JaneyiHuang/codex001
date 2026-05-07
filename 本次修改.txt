@@ -1,0 +1,49 @@
+能不能将所有对比的实验代码分别抽离成单个实验代码文件，然后对比的时候集中用一个文件来控制我选择哪些实验作为对比？
+
+
+
+可以，我已经给你拆好了。
+
+新增了一个统一控制入口：[compare_experiments.py](D:/ZJUT/miniPaper/Code/codex001/compare_experiments.py)
+
+每个对比策略现在单独放在：
+
+- [experiments/local_policy.py](D:/ZJUT/miniPaper/Code/codex001/experiments/local_policy.py)
+- [experiments/offload_policy.py](D:/ZJUT/miniPaper/Code/codex001/experiments/offload_policy.py)
+- [experiments/random_policy.py](D:/ZJUT/miniPaper/Code/codex001/experiments/random_policy.py)
+- [experiments/greedy_policy.py](D:/ZJUT/miniPaper/Code/codex001/experiments/greedy_policy.py)
+- [experiments/mappo_policy.py](D:/ZJUT/miniPaper/Code/codex001/experiments/mappo_policy.py)
+
+公共评估循环、保存 CSV、画图逻辑放在：[experiments/common.py](D:/ZJUT/miniPaper/Code/codex001/experiments/common.py)
+
+现在你可以这样选择对比哪些实验：
+
+```powershell
+python compare_experiments.py --experiments mappo,local,offload,greedy --episodes 50
+```
+
+跑不同负载扫描：
+
+```powershell
+python compare_experiments.py --mode loads --experiments mappo,offload,greedy --episodes 50 --load-points 13
+```
+
+结果默认保存到：
+
+```text
+results\compare_experiments\
+```
+
+包括：
+
+```text
+comparison_summary.csv
+comparison_dashboard.png
+comparison_loads_summary.csv
+loads_delay.png
+loads_drop_rate.png
+loads_offload_rate.png
+loads_reward.png
+```
+
+我也做了快速验证：固定场景、MAPPO 加载、负载扫描入口都能正常跑通。之后你要加 D3QN，就新增一个 `experiments/d3qn_policy.py`，然后在 `compare_experiments.py` 的 `EXPERIMENTS` 里注册 `"d3qn"` 就可以集中控制对比了。
