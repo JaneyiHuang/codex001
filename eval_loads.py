@@ -130,7 +130,7 @@ def run_one_episode(
 # =========================================================
 # Evaluate one policy under one config
 # =========================================================
-def evaluate_policy(
+def evaluate_policy(# 对一种负载、一种策略，跑 50 局取平均。
     cfg: EnvConfig,
     policy_name: str,
     num_eval_episodes: int,
@@ -186,7 +186,7 @@ def save_csv(save_dir: str, records: List[Dict[str, Any]], filename: str) -> Non
 # =========================================================
 # Plotting
 # =========================================================
-def plot_metric_across_loads(
+def plot_metric_across_loads(# 画连续曲线
     save_dir: str,
     all_results: List[Dict[str, Any]],
     metric_key: str,
@@ -341,17 +341,17 @@ def main():
     # Dense load scan with a wider default range.
     load_factor_min = float(os.getenv("LOAD_FACTOR_MIN", "0.70"))
     load_factor_max = float(os.getenv("LOAD_FACTOR_MAX", "1.30"))
-    num_load_points = int(os.getenv("NUM_LOAD_POINTS", "13"))
-    load_factors = np.linspace(load_factor_min, load_factor_max, num_load_points)
+    num_load_points = int(os.getenv("NUM_LOAD_POINTS", "13"))# 均匀分 13 档
+    load_factors = np.linspace(load_factor_min, load_factor_max, num_load_points)# 生成 13 个递增负载等级
 
     all_results = []
 
     for idx, load_factor in enumerate(load_factors, start=1):
-        task_min_bits = base_cfg.task_min_bits * float(load_factor)
+        task_min_bits = base_cfg.task_min_bits * float(load_factor)# 对每个负载，修改环境
         task_max_bits = base_cfg.task_max_bits * float(load_factor)
         cfg = replace(
             base_cfg,
-            task_min_bits=task_min_bits,
+            task_min_bits=task_min_bits,# 负载越大，任务数据量越大，环境越拥挤、越难
             task_max_bits=task_max_bits,
         )
         load_name = f"load_{idx:02d}"
@@ -360,7 +360,7 @@ def main():
         print(f"\n========== Evaluating load factor: {load_factor:.2f} ==========")
         print(f"task_min_bits={task_min_bits:.1e}, task_max_bits={task_max_bits:.1e}")
 
-        for policy_name in POLICY_ORDER:
+        for policy_name in POLICY_ORDER:# 每个负载都测 5 种策略
             print(f"Evaluating policy: {policy_name}")
             result = evaluate_policy(
                 cfg=cfg,

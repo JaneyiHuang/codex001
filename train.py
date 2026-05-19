@@ -21,6 +21,9 @@ from config import EnvConfig
 def parse_train_load_factors() -> List[float]:
     """
     Parse discrete load factors for multi-load random training.
+    从环境变量读取负载因子
+    控制边缘计算任务量的大小
+    让训练环境多样化，模型更鲁棒
     """
     raw = os.getenv("TRAIN_LOAD_FACTORS", "0.67,0.83,1.00,1.17,1.33")
     factors = [float(item.strip()) for item in raw.split(",") if item.strip()]
@@ -30,6 +33,10 @@ def parse_train_load_factors() -> List[float]:
 
 
 def build_episode_cfg(cfg: EnvConfig, load_factor: float) -> EnvConfig:
+    """
+    每一局动态修改环境配置
+    改变任务大小，模拟不同负载
+    """
     return replace(
         cfg,
         task_min_bits=cfg.task_min_bits * load_factor,
@@ -40,6 +47,8 @@ def build_episode_cfg(cfg: EnvConfig, load_factor: float) -> EnvConfig:
 def moving_average(data: List[float], window: int = 20) -> np.ndarray:
     """
     Compute moving average for smoother visualization.
+    滑动平均
+让画图曲线更平滑
     """
     if len(data) == 0:
         return np.array([])
@@ -158,11 +167,23 @@ def train():
     phase1_episodes = int(round(num_episodes * phase1_ratio))
     phase2_episodes = num_episodes - phase1_episodes
     phase1_load_factor = float(os.getenv("PHASE1_LOAD_FACTOR", "1.0"))
+    """
+    训练分成两个阶段(phase1、2)
+        阶段 1：简单模式（phase1）
+        环境负载固定、任务少、难度低
+        让智能体先学会基础规则
+        让训练更容易收敛、不崩溃
+        阶段 2：复杂模式（phase2）
+        环境负载随机变化（高负载、低负载轮流来）
+        让智能体适应各种真实场景
+        提高泛化能力
+    """
+
 
     # =========================================================
     # 2. Build environment and agent
     # =========================================================
-    agent = MAPPO(
+    agent = MAPPO(# 创建 MAPPO 智能体
         obs_dim=cfg.obs_dim,
         state_dim=cfg.state_dim,
         n_actions=cfg.n_actions,
@@ -191,7 +212,7 @@ def train():
     # =========================================================
     # 4. Main training loop
     # =========================================================
-    for episode in range(1, num_episodes + 1):
+    for episode in range(1, num_episodes + 1):# 每一次循环 = 跑一局完整的边缘计算任务卸载
         if episode <= phase1_episodes:
             stage_name = "phase1"
             load_factor = phase1_load_factor
@@ -200,11 +221,11 @@ def train():
             load_factor = float(rng.choice(train_load_factors))
 
         episode_cfg = build_episode_cfg(cfg, load_factor)
-        env = MECEnv(episode_cfg)
+        env = MECEnv(episode_cfg)# 创建新环境
         env.seed(seed + episode)
 
         # create a fresh rollout buffer for each episode
-        buffer = RolloutBuffer(
+        buffer = RolloutBuffer(# 新 buffer
             episode_limit=episode_cfg.episode_limit,
             n_agents=episode_cfg.M,
             obs_dim=episode_cfg.obs_dim,
@@ -214,6 +235,7 @@ def train():
             device="cpu",
         )
 
+        # 环境重置
         data = env.reset()
         obs = data["obs"]
         state = data["state"]
@@ -229,15 +251,15 @@ def train():
         step_count = 0
 
         while not done:
-            # 1) select actions
+            # 1) select actions 带探索采样动作
             act_out = agent.select_actions(obs, deterministic=False)
             actions = act_out["actions"]
-            log_probs = act_out["log_probs"]
+            log_probs = act_out["log_probs"] # 存 log_probs 变成未来的 old_log_probs
 
-            # 2) critic estimate
+            # 2) critic estimate 【Critic 评估价值
             value = agent.get_value(state)
 
-            # 3) step environment
+            # 3) step environment执行动作，环境返回结果
             out = env.step(actions)
             next_obs = out["obs"]
             next_state = out["state"]
@@ -245,7 +267,7 @@ def train():
             done = out["done"]
             info = out["info"]
 
-            # 4) store transition
+            # 4) store transition 把这一步数据存入 buffer
             buffer.store(
                 obs=obs,
                 state=state,
@@ -263,17 +285,17 @@ def train():
             offload_rate_list.append(info["offload_rate"])
             energy_mean_list.append(info["energy_mean"])
 
-            # 6) move forward
+            # 6) move forward 继续下一步
             obs = next_obs
             state = next_state
             step_count += 1
 
         # =====================================================
-        # 5. Compute returns / advantages
+        # 5. Compute returns / advantages【一局结束，开始训练！】
         # =====================================================
         last_value = 0.0
-        buffer.compute_returns_and_advantages(last_value=last_value)
-        buffer.normalize_advantages()
+        buffer.compute_returns_and_advantages(last_value=last_value) #真实价值 returns，优势函数 advantages
+        buffer.normalize_advantages() #归一化优势
         batch = buffer.get()
 
         # =====================================================

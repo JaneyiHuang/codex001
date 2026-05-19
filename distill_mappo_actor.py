@@ -19,7 +19,7 @@ from models import Actor
 from prune_mappo_actor import count_parameters, measure_actor_latency
 
 
-def load_teacher_actor(cfg: EnvConfig, model_path: str, device: str) -> Actor:
+def load_teacher_actor(cfg: EnvConfig, model_path: str, device: str) -> Actor:# 加载教师模型
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Cannot find teacher MAPPO checkpoint: {model_path}")
 
@@ -30,11 +30,11 @@ def load_teacher_actor(cfg: EnvConfig, model_path: str, device: str) -> Actor:
     ).to(device)
     ckpt = torch.load(model_path, map_location=device)
     actor.load_state_dict(ckpt["actor"])
-    actor.eval()
+    actor.eval()#设为eval模式，不训练
     return actor
 
 
-def load_student_actor(cfg: EnvConfig, model_path: str, device: str) -> Tuple[Actor, Dict[str, Any]]:
+def load_student_actor(cfg: EnvConfig, model_path: str, device: str) -> Tuple[Actor, Dict[str, Any]]:# 加载学生模型
     if not os.path.exists(model_path):
         raise FileNotFoundError(
             f"Cannot find pruned student actor: {model_path}\n"
@@ -55,11 +55,11 @@ def load_student_actor(cfg: EnvConfig, model_path: str, device: str) -> Tuple[Ac
         hidden_dims=hidden_dims,
     ).to(device)
     actor.load_state_dict(ckpt["actor"])
-    actor.train()
+    actor.train()# 设置为训练模式，准备学习教师网络
     return actor, ckpt
 
 
-def collect_teacher_observations(
+def collect_teacher_observations(#用教师模型跑环境，收集观测数据，用来训练学生网络
     cfg: EnvConfig,
     teacher: Actor,
     collect_episodes: int,
@@ -79,8 +79,8 @@ def collect_teacher_observations(
             observations.append(obs.astype(np.float32, copy=True))
             obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device)
             with torch.no_grad():
-                logits = teacher(obs_tensor)
-                actions = torch.argmax(logits, dim=-1).cpu().numpy()
+                logits = teacher(obs_tensor)# 教师做出的决策
+                actions = torch.argmax(logits, dim=-1).cpu().numpy()# 教师选出的动作
 
             out = env.step(actions)
             obs = out["obs"]
@@ -94,7 +94,7 @@ def collect_teacher_observations(
     return obs_array
 
 
-def split_train_val(
+def split_train_val(#把数据分成训练集和验证集（打乱数据，90%用来训练学生，10%来测学生学的好不好）
     obs_array: np.ndarray,
     val_ratio: float,
     seed: int,
@@ -119,7 +119,7 @@ def split_train_val(
     return train_obs, val_obs
 
 
-def distillation_loss(
+def distillation_loss(# 蒸馏损失，学生网络拟合教师网络的输出
     student_logits: torch.Tensor,
     teacher_logits: torch.Tensor,
     temperature: float,
@@ -129,7 +129,7 @@ def distillation_loss(
     return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean") * (temperature ** 2)
 
 
-def evaluate_student_match(
+def evaluate_student_match(# 评估学生网络的输出，统计学生网络和教师网络的动作一致率
     teacher: Actor,
     student: Actor,
     obs: torch.Tensor,
@@ -165,7 +165,7 @@ def evaluate_student_match(
     }
 
 
-def train_student(
+def train_student(#训练学生
     teacher: Actor,
     student: Actor,
     train_obs: torch.Tensor,
@@ -178,26 +178,26 @@ def train_student(
         shuffle=True,
         drop_last=False,
     )
-    optimizer = Adam(student.parameters(), lr=args.lr)
+    optimizer = Adam(student.parameters(), lr=args.lr)# 优化器：调整学生参数
     log_records: List[Dict[str, float]] = []
 
     teacher.eval()
     student.train()
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, args.epochs + 1):# 每一轮训练
         batch_losses = []
         batch_agreements = []
 
-        for (batch_obs,) in train_loader:
+        for (batch_obs,) in train_loader:# 每一批数据:
             batch_obs = batch_obs.to(args.device)
 
-            with torch.no_grad():
+            with torch.no_grad():# 教师网络的输出（标准答案）
                 teacher_logits = teacher(batch_obs)
 
-            student_logits = student(batch_obs)
-            loss = distillation_loss(student_logits, teacher_logits, args.temperature)
+            student_logits = student(batch_obs)# 学生尝试做题
+            loss = distillation_loss(student_logits, teacher_logits, args.temperature)#计算学生和老师差多少
 
-            optimizer.zero_grad()
+            optimizer.zero_grad()#让学生改错，变得和和教师网络接近
             loss.backward()
             optimizer.step()
 
@@ -236,7 +236,7 @@ def train_student(
     return log_records
 
 
-def save_distillation_log(save_path: str, records: List[Dict[str, float]]) -> str:
+def save_distillation_log(save_path: str, records: List[Dict[str, float]]) -> str:# 保存日志
     log_path = os.path.splitext(save_path)[0] + "_log.csv"
     if not records:
         return log_path
@@ -250,7 +250,7 @@ def save_distillation_log(save_path: str, records: List[Dict[str, float]]) -> st
     return log_path
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> argparse.Namespace:#命令行参数
     parser = argparse.ArgumentParser(description="Distill a pruned MAPPO actor from the original actor.")
     parser.add_argument(
         "--teacher-model-path",
@@ -295,9 +295,11 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
+    # 加载教师和学生
     teacher = load_teacher_actor(cfg, args.teacher_model_path, args.device)
     student, student_ckpt = load_student_actor(cfg, args.student_model_path, args.device)
 
+    # 收集教师的经验数据
     obs_array = collect_teacher_observations(
         cfg=cfg,
         teacher=teacher,
@@ -308,6 +310,7 @@ def main() -> None:
     train_obs, val_obs = split_train_val(obs_array, args.val_ratio, args.seed)
     print(f"Train observations: {len(train_obs)}, validation observations: {len(val_obs)}")
 
+    # 蒸馏前，先测一下学生有多像老师
     pre_metrics = evaluate_student_match(
         teacher=teacher,
         student=student,
@@ -321,6 +324,7 @@ def main() -> None:
         f"ValAgree: {pre_metrics['agreement']:.4f}"
     )
 
+    # 开始训练，老师教学生30轮
     records = train_student(
         teacher=teacher,
         student=student,
@@ -329,6 +333,7 @@ def main() -> None:
         args=args,
     )
 
+    # 蒸馏后，再测学生有多像老师
     post_metrics = evaluate_student_match(
         teacher=teacher,
         student=student,
@@ -338,6 +343,7 @@ def main() -> None:
         device=args.device,
     )
 
+    # 数参数、测速
     teacher_params = count_parameters(teacher)
     student_params = count_parameters(student)
     compression_ratio = teacher_params / max(student_params, 1)
@@ -359,6 +365,7 @@ def main() -> None:
     os.makedirs(os.path.dirname(args.save_path) or ".", exist_ok=True)
     log_path = save_distillation_log(args.save_path, records)
 
+    # 保存变聪明的学生模型
     torch.save(
         {
             **student_ckpt,

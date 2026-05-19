@@ -1,4 +1,17 @@
-# eval.py
+# eval.py 用于在固定任务负载下比较
+
+'''
+1. 加载训练好的 MAPPO 模型
+2. 创建边缘计算环境
+3. 一次性评测 5 种策略：
+   - mappo（你的模型）
+   - local（全部本地计算）
+   - offload（全部卸载）
+   - random（随机选）
+   - greedy（手动写的贪心算法）
+4. 每个策略跑50轮，算平均：奖励、延迟、丢包、能耗
+5. 输出对比表格 + 柱状图 + 训练收敛图
+'''
 from __future__ import annotations
 
 import os
@@ -14,7 +27,7 @@ from env import MECEnv
 from mappo import MAPPO
 
 
-def moving_average(data: List[float], window: int = 20) -> np.ndarray:
+def moving_average(data: List[float], window: int = 20) -> np.ndarray:# 滑动平均，让曲线平滑
     if len(data) == 0:
         return np.array([])
     arr = np.array(data, dtype=np.float32)
@@ -26,7 +39,7 @@ def moving_average(data: List[float], window: int = 20) -> np.ndarray:
     return np.concatenate([prefix, ma], axis=0)
 
 
-def load_training_records(results_dir: str) -> List[Dict[str, float]]:
+def load_training_records(results_dir: str) -> List[Dict[str, float]]: # 读取训练日志 csv
     csv_path = os.path.join(results_dir, "training_log.csv")
     if not os.path.exists(csv_path):
         return []
@@ -48,11 +61,14 @@ def load_training_records(results_dir: str) -> List[Dict[str, float]]:
 # =========================================================
 # Helper: Greedy baseline
 # =========================================================
-def greedy_action_for_agent(env: MECEnv, m: int) -> int:
+def greedy_action_for_agent(env: MECEnv, m: int) -> int: # 传统贪心算法，用来当对比基线。
     """
     Greedy baseline:
     compare estimated local delay and estimated offload delay,
     then choose the smaller one.
+    算本地执行延迟
+    算卸载执行延迟
+    选延迟更小的那个
     """
     cfg = env.cfg
 
@@ -158,7 +174,7 @@ def run_one_episode(
 
 
 # =========================================================
-# Multi-episode evaluation
+# Multi-episode evaluation（通过num_eval_episodes来控制跑几轮）
 # =========================================================
 def evaluate_policy(
     env: MECEnv,
@@ -199,7 +215,7 @@ def evaluate_policy(
 # =========================================================
 # Save results
 # =========================================================
-def save_eval_csv(save_dir: str, results: List[Dict[str, float]]) -> None:
+def save_eval_csv(save_dir: str, results: List[Dict[str, float]]) -> None: #保存评测结果
     os.makedirs(save_dir, exist_ok=True)
     csv_path = os.path.join(save_dir, "eval_summary.csv")
 
@@ -244,7 +260,7 @@ def print_summary_table(results: List[Dict[str, float]]) -> None:
 # =========================================================
 # Plotting
 # =========================================================
-def plot_bar_metric(
+def plot_bar_metric(# 画各种对比图
     save_dir: str,
     results: List[Dict[str, float]],
     metric_mean_key: str,
@@ -403,7 +419,7 @@ def plot_training_convergence_overview(
 def main():
     cfg = EnvConfig()
 
-    num_eval_episodes = 50
+    num_eval_episodes = 50 # 跑50轮
     model_path = os.path.join("results", "mappo_checkpoint.pt")
     # model_path = os.path.join("results", "mappo_last.pt")
     save_dir = os.path.join("results", "eval_results")
@@ -439,7 +455,7 @@ def main():
             f"Please run train.py first."
         )
 
-    agent.load(model_path)
+    agent.load(model_path)# 加载训练好的模型
     print(f"Loaded trained MAPPO model from: {model_path}")
 
     policies = ["mappo", "local", "offload", "random", "greedy"]
