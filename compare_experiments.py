@@ -26,6 +26,15 @@ from experiments.random_policy import RandomPolicy
 
 
 PolicyFactory = Callable[[EnvConfig, argparse.Namespace], Any]
+DEFAULT_EXPERIMENT_NAMES = [
+    "mappo",
+    "pruned_mappo",
+    "distilled_mappo",
+    "offload",
+    "greedy",
+    "local",
+    "random",
+]
 
 
 def build_mappo(cfg: EnvConfig, args: argparse.Namespace) -> MAPPOPolicy:
@@ -50,13 +59,17 @@ def build_distilled_mappo(cfg: EnvConfig, args: argparse.Namespace) -> PrunedMAP
     )
 
 
+def build_random(cfg: EnvConfig, args: argparse.Namespace) -> RandomPolicy:
+    return RandomPolicy(seed=args.seed)
+
+
 EXPERIMENTS: Dict[str, PolicyFactory] = {
     "mappo": build_mappo,
     "pruned_mappo": build_pruned_mappo,
     "distilled_mappo": build_distilled_mappo,
     "local": lambda cfg, args: LocalPolicy(),
     "offload": lambda cfg, args: OffloadPolicy(),
-    "random": lambda cfg, args: RandomPolicy(),
+    "random": build_random,
     "greedy": lambda cfg, args: GreedyPolicy(),
 }
 
@@ -152,8 +165,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--experiments",
-        default=os.getenv("COMPARE_EXPERIMENTS", "mappo,local,offload,random,greedy"),
-        help="Comma-separated experiment names, e.g. mappo,offload,greedy.",
+        default=os.getenv("COMPARE_EXPERIMENTS", ",".join(DEFAULT_EXPERIMENT_NAMES)),
+        help=(
+            "Comma-separated experiment names. Valid names: "
+            f"{', '.join(EXPERIMENTS)}."
+        ),
     )
     parser.add_argument(
         "--mode",
@@ -191,8 +207,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.episodes <= 0:
+        raise ValueError("--episodes must be positive.")
+    if args.load_points <= 0:
+        raise ValueError("--load-points must be positive.")
+    if args.load_min > args.load_max:
+        raise ValueError("--load-min must be less than or equal to --load-max.")
+
     cfg = EnvConfig()
     experiment_names = parse_experiment_names(args.experiments)
+    print(f"Mode: {args.mode}")
+    print(f"Experiments: {', '.join(experiment_names)}")
+    print(f"Episodes per policy/config: {args.episodes}")
     policies = build_policies(cfg, experiment_names, args)
 
     if args.mode == "fixed":
