@@ -35,6 +35,9 @@ DEFAULT_EXPERIMENT_NAMES = [
     "local",
     "random",
 ]
+DEFAULT_EXPERIMENT_STRING = ",".join(DEFAULT_EXPERIMENT_NAMES)
+RATE_SWEEP_BASE_EXPERIMENT_NAMES = ["mappo"]
+RATE_SWEEP_BASELINE_NAMES = ["offload", "greedy", "local", "random"]
 
 
 def build_mappo(cfg: EnvConfig, args: argparse.Namespace) -> MAPPOPolicy:
@@ -83,12 +86,94 @@ def parse_experiment_names(raw_names: str) -> List[str]:
     return names
 
 
+def parse_prune_rates(raw_rates: str) -> List[float]:
+    rates = []
+    for item in raw_rates.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        rate = float(item)
+        if rate > 1.0:
+            rate = rate / 100.0
+        if not 0.0 <= rate < 1.0:
+            raise ValueError("Prune rates must be in [0, 1), or percentages in [0, 100).")
+        rates.append(rate)
+    return rates
+
+
+def format_prune_suffix(rate: float) -> str:
+    percent = rate * 100.0
+    if abs(percent - round(percent)) < 1e-8:
+        return f"p{int(round(percent))}"
+    return "p" + f"{percent:.2f}".rstrip("0").rstrip(".").replace(".", "p")
+
+
+def format_rate_path(template: str, rate: float) -> str:
+    suffix = format_prune_suffix(rate)
+    percent = rate * 100.0
+    return template.format(
+        rate=rate,
+        percent=percent,
+        percent_int=int(round(percent)),
+        suffix=suffix,
+    )
+
+
 def build_policies(
     cfg: EnvConfig,
     names: List[str],
     args: argparse.Namespace,
 ) -> List[Any]:
     return [EXPERIMENTS[name](cfg, args) for name in names]
+
+
+def build_prune_rate_policies(
+    cfg: EnvConfig,
+    rates: List[float],
+    args: argparse.Namespace,
+) -> List[Any]:
+    policies: List[Any] = []
+    for rate in rates:
+        suffix = format_prune_suffix(rate)
+        pruned_path = format_rate_path(args.pruned_model_template, rate)
+        distilled_path = format_rate_path(args.distilled_model_template, rate)
+        policies.append(
+            PrunedMAPPOPolicy(
+                cfg,
+                model_path=pruned_path,
+                device=args.device,
+                policy_name=f"pruned_{suffix}",
+            )
+        )
+        policies.append(
+            PrunedMAPPOPolicy(
+                cfg,
+                model_path=distilled_path,
+                device=args.device,
+                policy_name=f"distilled_{suffix}",
+            )
+        )
+    return policies
+
+
+def build_comparison_policies(
+    cfg: EnvConfig,
+    experiment_names: List[str],
+    args: argparse.Namespace,
+) -> List[Any]:
+    prune_rates = parse_prune_rates(args.prune_rates)
+    if not prune_rates:
+        return build_policies(cfg, experiment_names, args)
+
+    if args.experiments == DEFAULT_EXPERIMENT_STRING:
+        policies = build_policies(cfg, RATE_SWEEP_BASE_EXPERIMENT_NAMES, args)
+        policies.extend(build_prune_rate_policies(cfg, prune_rates, args))
+        policies.extend(build_policies(cfg, RATE_SWEEP_BASELINE_NAMES, args))
+        return policies
+
+    policies = build_policies(cfg, experiment_names, args)
+    policies.extend(build_prune_rate_policies(cfg, prune_rates, args))
+    return policies
 
 
 def run_fixed_comparison(
@@ -165,7 +250,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--experiments",
-        default=os.getenv("COMPARE_EXPERIMENTS", ",".join(DEFAULT_EXPERIMENT_NAMES)),
+        default=os.getenv("COMPARE_EXPERIMENTS", DEFAULT_EXPERIMENT_STRING),
         help=(
             "Comma-separated experiment names. Valid names: "
             f"{', '.join(EXPERIMENTS)}."
@@ -194,6 +279,38 @@ def parse_args() -> argparse.Namespace:
             os.path.join("results", "mappo_actor_pruned_distilled.pt"),
         ),
     )
+    parser.add_argument(
+        "--prune-rates",
+        default=os.getenv("PRUNE_RATES", ""),
+        help=(
+            "Comma-separated pruning rates for a pruning-rate sweep, e.g. "
+            "0.10,0.25,0.40,0.50 or 10,25,40,50. When this is set and "
+            "--experiments is left at its default, the single pruned_mappo/"
+            "distilled_mappo entries are replaced by rate-specific policies."
+        ),
+    )
+    parser.add_argument(
+        "--pruned-model-template",
+        default=os.getenv(
+            "PRUNED_MODEL_TEMPLATE",
+            os.path.join("results", "mappo_actor_pruned_{suffix}.pt"),
+        ),
+        help=(
+            "Path template for rate-specific pruned actors. Available fields: "
+            "{suffix}, {rate}, {percent}, {percent_int}."
+        ),
+    )
+    parser.add_argument(
+        "--distilled-model-template",
+        default=os.getenv(
+            "DISTILLED_MODEL_TEMPLATE",
+            os.path.join("results", "mappo_actor_pruned_distilled_{suffix}.pt"),
+        ),
+        help=(
+            "Path template for rate-specific distilled actors. Available fields: "
+            "{suffix}, {rate}, {percent}, {percent_int}."
+        ),
+    )
     parser.add_argument("--device", default=os.getenv("COMPARE_DEVICE", "cpu"))
     parser.add_argument(
         "--save-dir",
@@ -217,9 +334,9 @@ def main() -> None:
     cfg = EnvConfig()
     experiment_names = parse_experiment_names(args.experiments)
     print(f"Mode: {args.mode}")
-    print(f"Experiments: {', '.join(experiment_names)}")
     print(f"Episodes per policy/config: {args.episodes}")
-    policies = build_policies(cfg, experiment_names, args)
+    policies = build_comparison_policies(cfg, experiment_names, args)
+    print(f"Policies: {', '.join(policy.name for policy in policies)}")
 
     if args.mode == "fixed":
         run_fixed_comparison(cfg, policies, args)

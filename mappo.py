@@ -235,7 +235,7 @@ class MAPPO:
                 values_pred = self.critic(mb_states).squeeze(-1)
                 critic_loss = ((values_pred - mb_returns) ** 2).mean()
 
-                # 总损失 = 策略损失 + 价值损失权重*价值损失 - 探索权重*熵
+                # 总损失 = 策略损失 + 价值损失权重（设为0.5）*价值损失 - 探索权重（设为0.005）*熵
                 total_loss = actor_loss + self.critic_coef * critic_loss - self.entropy_coef * entropy
 
                 # 反向传播，更新网络(到info之前都是)
