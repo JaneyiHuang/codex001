@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -21,6 +22,11 @@ except Exception:  # pragma: no cover - plotly is optional at runtime.
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_CSV = ROOT_DIR / "results" / "compare_prune_rates_loads" / "comparison_loads_summary.csv"
 DEFAULT_OUT_DIR = DEFAULT_CSV.parent / "draw_tmp"
+DEFAULT_MODEL_PATH = ROOT_DIR / "results" / "mappo_checkpoint.pt"
+DEFAULT_DISTILLED_MODEL_TEMPLATE = str(
+    ROOT_DIR / "results" / "mappo_actor_pruned_distilled_{suffix}.pt"
+)
+DEFAULT_DEPLOY_PRUNE_RATES = "10,25,40,50"
 
 BASELINE_POLICIES = ("greedy", "local", "offload", "random")
 DEFAULT_FOCUS_POLICIES = ("distilled_p50", "pruned_p50", "mappo")
@@ -116,6 +122,30 @@ def parse_args() -> argparse.Namespace:
         "--show-std",
         action="store_true",
         help="Draw faint standard-deviation bands in static figures.",
+    )
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=DEFAULT_MODEL_PATH,
+        help="Original MAPPO checkpoint used for the deployment-size comparison.",
+    )
+    parser.add_argument(
+        "--distilled-model-template",
+        default=DEFAULT_DISTILLED_MODEL_TEMPLATE,
+        help=(
+            "Path template for distilled actors in the deployment-size comparison. "
+            "Available fields: {suffix}, {rate}, {percent}, {percent_int}."
+        ),
+    )
+    parser.add_argument(
+        "--deploy-prune-rates",
+        default=DEFAULT_DEPLOY_PRUNE_RATES,
+        help="Comma-separated distilled pruning rates used in the deployment-size comparison.",
+    )
+    parser.add_argument(
+        "--no-model-deploy",
+        action="store_true",
+        help="Skip the actor parameter/model-size deployment comparison.",
     )
     return parser.parse_args()
 
@@ -462,6 +492,364 @@ def plot_interactive_metric(
     return html_path
 
 
+def parse_prune_rates(raw_rates: str) -> List[float]:
+    rates = []
+    for item in raw_rates.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        rate = float(item)
+        if rate > 1.0:
+            rate = rate / 100.0
+        if not 0.0 <= rate < 1.0:
+            raise ValueError("Prune rates must be in [0, 1), or percentages in [0, 100).")
+        rates.append(rate)
+    return rates
+
+
+def format_prune_suffix(rate: float) -> str:
+    percent = rate * 100.0
+    if abs(percent - round(percent)) < 1e-8:
+        return f"p{int(round(percent))}"
+    return "p" + f"{percent:.2f}".rstrip("0").rstrip(".").replace(".", "p")
+
+
+def format_rate_path(template: str, rate: float) -> Path:
+    suffix = format_prune_suffix(rate)
+    percent = rate * 100.0
+    path = Path(
+        template.format(
+            rate=rate,
+            percent=percent,
+            percent_int=int(round(percent)),
+            suffix=suffix,
+        )
+    )
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    return path
+
+
+def load_torch_checkpoint(path: Path) -> Dict[str, Any]:
+    import torch
+
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location="cpu")
+    except Exception:
+        return torch.load(path, map_location="cpu")
+
+
+def count_state_dict_params(state_dict: Dict[str, Any]) -> int:
+    return int(
+        sum(
+            tensor.numel()
+            for tensor in state_dict.values()
+            if hasattr(tensor, "numel")
+        )
+    )
+
+
+def state_dict_nbytes(state_dict: Dict[str, Any]) -> int:
+    return int(
+        sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in state_dict.values()
+            if hasattr(tensor, "numel") and hasattr(tensor, "element_size")
+        )
+    )
+
+
+def infer_actor_hidden_dims(state_dict: Dict[str, Any]) -> List[int]:
+    linear_weights = [
+        tensor
+        for key, tensor in state_dict.items()
+        if key.endswith(".weight") and getattr(tensor, "ndim", 0) == 2
+    ]
+    if len(linear_weights) < 2:
+        raise ValueError("Cannot infer actor hidden dimensions from checkpoint state_dict.")
+    return [int(tensor.shape[0]) for tensor in linear_weights[:-1]]
+
+
+def infer_actor_io_dims(state_dict: Dict[str, Any]) -> Tuple[int, int]:
+    linear_weights = [
+        tensor
+        for key, tensor in state_dict.items()
+        if key.endswith(".weight") and getattr(tensor, "ndim", 0) == 2
+    ]
+    if not linear_weights:
+        raise ValueError("Cannot infer actor input/output dimensions from checkpoint state_dict.")
+    return int(linear_weights[0].shape[1]), int(linear_weights[-1].shape[0])
+
+
+def serialized_actor_size_bytes(
+    state_dict: Dict[str, Any],
+    hidden_dims: Sequence[int],
+    obs_dim: int,
+    n_actions: int,
+    n_agents: int,
+) -> int:
+    import torch
+
+    payload = {
+        "actor": state_dict,
+        "actor_hidden_dims": list(hidden_dims),
+        "obs_dim": int(obs_dim),
+        "n_actions": int(n_actions),
+        "n_agents": int(n_agents),
+    }
+    buffer = io.BytesIO()
+    torch.save(payload, buffer)
+    return buffer.tell()
+
+
+def build_model_record(
+    *,
+    model: str,
+    display_name: str,
+    prune_rate: float,
+    path: Path,
+    state_dict: Dict[str, Any],
+    hidden_dims: Sequence[int],
+    obs_dim: int,
+    n_actions: int,
+    n_agents: int,
+    original_params: int,
+    original_deploy_size_bytes: int,
+) -> Dict[str, Any]:
+    params = count_state_dict_params(state_dict)
+    param_bytes = state_dict_nbytes(state_dict)
+    deploy_size_bytes = serialized_actor_size_bytes(
+        state_dict=state_dict,
+        hidden_dims=hidden_dims,
+        obs_dim=obs_dim,
+        n_actions=n_actions,
+        n_agents=n_agents,
+    )
+    return {
+        "model": model,
+        "display_name": display_name,
+        "prune_rate": prune_rate,
+        "hidden_dims": "-".join(str(dim) for dim in hidden_dims),
+        "params": params,
+        "param_memory_mb": param_bytes / (1024.0**2),
+        "deployment_size_mb": deploy_size_bytes / (1024.0**2),
+        "actual_checkpoint_mb": path.stat().st_size / (1024.0**2),
+        "param_compression_x": original_params / max(params, 1),
+        "size_compression_x": original_deploy_size_bytes / max(deploy_size_bytes, 1),
+        "param_reduction_pct": (1.0 - params / max(original_params, 1)) * 100.0,
+        "size_reduction_pct": (
+            1.0 - deploy_size_bytes / max(original_deploy_size_bytes, 1)
+        )
+        * 100.0,
+        "path": str(path),
+    }
+
+
+def build_model_deployment_records(
+    model_path: Path,
+    distilled_model_template: str,
+    prune_rates: Sequence[float],
+) -> List[Dict[str, Any]]:
+    model_path = model_path if model_path.is_absolute() else ROOT_DIR / model_path
+    if not model_path.exists():
+        print(f"Skip deployment comparison: missing original model {model_path}")
+        return []
+
+    original_ckpt = load_torch_checkpoint(model_path)
+    original_state = original_ckpt["actor"]
+    original_hidden_dims = infer_actor_hidden_dims(original_state)
+    original_obs_dim, original_n_actions = infer_actor_io_dims(original_state)
+    original_n_agents = int(original_ckpt.get("n_agents", 4))
+    original_params = count_state_dict_params(original_state)
+    original_deploy_size_bytes = serialized_actor_size_bytes(
+        state_dict=original_state,
+        hidden_dims=original_hidden_dims,
+        obs_dim=original_obs_dim,
+        n_actions=original_n_actions,
+        n_agents=original_n_agents,
+    )
+
+    records = [
+        build_model_record(
+            model="original_mappo_actor",
+            display_name="Original MAPPO Actor",
+            prune_rate=0.0,
+            path=model_path,
+            state_dict=original_state,
+            hidden_dims=original_hidden_dims,
+            obs_dim=original_obs_dim,
+            n_actions=original_n_actions,
+            n_agents=original_n_agents,
+            original_params=original_params,
+            original_deploy_size_bytes=original_deploy_size_bytes,
+        )
+    ]
+
+    for rate in prune_rates:
+        suffix = format_prune_suffix(rate)
+        path = format_rate_path(distilled_model_template, rate)
+        if not path.exists():
+            print(f"Skip missing distilled actor for {suffix}: {path}")
+            continue
+
+        ckpt = load_torch_checkpoint(path)
+        state = ckpt["actor"]
+        hidden_dims = ckpt.get("actor_hidden_dims") or infer_actor_hidden_dims(state)
+        obs_dim = int(ckpt.get("obs_dim", original_obs_dim))
+        n_actions = int(ckpt.get("n_actions", original_n_actions))
+        n_agents = int(ckpt.get("n_agents", original_n_agents))
+        percent = int(round(rate * 100.0))
+        records.append(
+            build_model_record(
+                model=f"distilled_{suffix}",
+                display_name=f"Distilled {percent}%",
+                prune_rate=rate,
+                path=path,
+                state_dict=state,
+                hidden_dims=hidden_dims,
+                obs_dim=obs_dim,
+                n_actions=n_actions,
+                n_agents=n_agents,
+                original_params=original_params,
+                original_deploy_size_bytes=original_deploy_size_bytes,
+            )
+        )
+
+    return records
+
+
+def save_model_deployment_csv(records: Sequence[Dict[str, Any]], out_dir: Path) -> Path:
+    csv_path = out_dir / "model_deployment_comparison.csv"
+    fieldnames = [
+        "model",
+        "display_name",
+        "prune_rate",
+        "hidden_dims",
+        "params",
+        "param_memory_mb",
+        "deployment_size_mb",
+        "actual_checkpoint_mb",
+        "param_compression_x",
+        "size_compression_x",
+        "param_reduction_pct",
+        "size_reduction_pct",
+        "path",
+    ]
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
+    return csv_path
+
+
+def annotate_bar(
+    ax: plt.Axes,
+    bar: Any,
+    value_label: str,
+    reduction_pct: float,
+    show_reduction: bool,
+) -> None:
+    height = bar.get_height()
+    ax.annotate(
+        value_label,
+        xy=(bar.get_x() + bar.get_width() / 2.0, height),
+        xytext=(0, 5),
+        textcoords="offset points",
+        ha="center",
+        va="bottom",
+        fontsize=8.8,
+        color="#111827",
+    )
+    if show_reduction:
+        ax.annotate(
+            f"-{reduction_pct:.1f}%",
+            xy=(bar.get_x() + bar.get_width() / 2.0, height),
+            xytext=(0, 20),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=8.2,
+            color="#047857",
+        )
+
+
+def plot_model_deployment_comparison(
+    records: Sequence[Dict[str, Any]],
+    out_dir: Path,
+) -> List[Path]:
+    if not records:
+        return []
+
+    labels = [record["display_name"].replace(" ", "\n") for record in records]
+    colors = [
+        POLICY_COLORS.get(record["model"].replace("original_mappo_actor", "mappo"), "#334155")
+        for record in records
+    ]
+    for idx, record in enumerate(records):
+        if str(record["model"]).startswith("distilled_"):
+            colors[idx] = POLICY_COLORS.get(str(record["model"]), "#EF4444")
+
+    fig, axes = plt.subplots(1, 2, figsize=(11.4, 4.9))
+    metrics = [
+        (
+            "params",
+            "Actor Parameters",
+            "Parameters",
+            lambda value: f"{value / 1000.0:.1f}K",
+            "param_reduction_pct",
+        ),
+        (
+            "deployment_size_mb",
+            "Actor Deployment Size",
+            "Actor-only checkpoint size (MB)",
+            lambda value: f"{value * 1024.0:.1f} KB",
+            "size_reduction_pct",
+        ),
+    ]
+
+    for ax, (key, title, ylabel, label_fn, reduction_key) in zip(axes, metrics):
+        values = [float(record[key]) for record in records]
+        bars = ax.bar(range(len(records)), values, color=colors, width=0.66)
+        ax.set_title(title, pad=10)
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(range(len(records)))
+        ax.set_xticklabels(labels, rotation=0)
+        ax.grid(True, axis="y", color="#E2E8F0", linewidth=0.65)
+        ax.set_axisbelow(True)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.set_ylim(0, max(values) * 1.34)
+
+        for idx, (bar, record) in enumerate(zip(bars, records)):
+            annotate_bar(
+                ax,
+                bar,
+                label_fn(values[idx]),
+                float(record[reduction_key]),
+                show_reduction=idx > 0,
+            )
+
+    fig.suptitle("Deployment Cost: Original Actor vs Distilled Pruned Actors", fontsize=14)
+    fig.text(
+        0.5,
+        0.015,
+        "Actor-only deployment payload is shown because edge devices only need the decision network.",
+        ha="center",
+        fontsize=9,
+        color="#475569",
+    )
+    fig.tight_layout(rect=(0, 0.05, 1, 0.94))
+
+    png_path = out_dir / "model_deployment_comparison.png"
+    svg_path = out_dir / "model_deployment_comparison.svg"
+    fig.savefig(png_path, dpi=320, bbox_inches="tight")
+    fig.savefig(svg_path, bbox_inches="tight")
+    plt.close(fig)
+    return [png_path, svg_path]
+
+
 def main() -> None:
     args = parse_args()
     records = read_records(args.csv)
@@ -540,6 +928,16 @@ def main() -> None:
             )
             if html_path is not None:
                 saved_paths.append(html_path)
+
+    if not args.no_model_deploy:
+        deploy_records = build_model_deployment_records(
+            model_path=args.model_path,
+            distilled_model_template=args.distilled_model_template,
+            prune_rates=parse_prune_rates(args.deploy_prune_rates),
+        )
+        if deploy_records:
+            saved_paths.append(save_model_deployment_csv(deploy_records, args.out_dir))
+            saved_paths.extend(plot_model_deployment_comparison(deploy_records, args.out_dir))
 
     print(f"Saved {len(saved_paths)} files to {args.out_dir}")
     for path in saved_paths:
