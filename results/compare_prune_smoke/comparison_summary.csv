@@ -1,4 +1,0 @@
-policy,reward_mean,reward_std,delay_mean,delay_std,drop_rate_mean,drop_rate_std,offload_rate_mean,offload_rate_std,energy_mean,energy_std
-mappo,-155.00375000000005,0.0,155.00375,0.0,0.1925,0.0,0.78625,0.0,1.6313135252892972,0.0
-pruned_mappo,-154.72125,0.0,154.72125,0.0,0.205,0.0,0.75875,0.0,1.8447797881066799,0.0
-offload,-166.72874999999996,0.0,166.72875,0.0,0.07125,0.0,1.0,0.0,0.5911445894837379,0.0
