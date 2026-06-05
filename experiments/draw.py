@@ -11,6 +11,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
 from matplotlib.ticker import MultipleLocator
 
 try:
@@ -114,6 +115,37 @@ def parse_args() -> argparse.Namespace:
         help="Policy to highlight. Can be passed multiple times. Defaults to p50 methods and MAPPO.",
     )
     parser.add_argument(
+        "--main-policy",
+        default="mappo",
+        help="Original MAPPO policy name used in split comparisons.",
+    )
+    parser.add_argument(
+        "--pruned-policies",
+        default="",
+        help=(
+            "Comma-separated pruned policy names for prune-vs-MAPPO figures. "
+            "Defaults to every policy starting with pruned_."
+        ),
+    )
+    parser.add_argument(
+        "--distilled-policies",
+        default="",
+        help=(
+            "Comma-separated distilled policy names for distill-vs-MAPPO figures. "
+            "Defaults to every policy starting with distilled_."
+        ),
+    )
+    parser.add_argument(
+        "--combined-methods",
+        action="store_true",
+        help="Also draw the old combined pruned+distilled method figures.",
+    )
+    parser.add_argument(
+        "--only-split",
+        action="store_true",
+        help="Draw only prune-vs-MAPPO and distill-vs-MAPPO load curves.",
+    )
+    parser.add_argument(
         "--no-html",
         action="store_true",
         help="Skip interactive Plotly HTML files.",
@@ -175,17 +207,49 @@ def unique_in_order(values: Iterable[str]) -> List[str]:
     return ordered
 
 
-def prune_level(policy: str) -> int:
+def parse_policy_list(raw_policies: str) -> List[str]:
+    return [item.strip() for item in raw_policies.split(",") if item.strip()]
+
+
+def choose_group_policies(
+    all_policies: Sequence[str],
+    main_policy: str,
+    prefix: str,
+    selected_policies: Sequence[str],
+) -> List[str]:
+    policy_set = set(all_policies)
+    if selected_policies:
+        missing = [policy for policy in selected_policies if policy not in policy_set]
+        if missing:
+            print(f"Skip missing {prefix} policies in CSV: {', '.join(missing)}")
+        method_policies = [policy for policy in selected_policies if policy in policy_set]
+    else:
+        method_policies = [policy for policy in all_policies if policy.startswith(prefix)]
+
+    group: List[str] = []
+    if main_policy in policy_set:
+        group.append(main_policy)
+    elif method_policies:
+        print(f"Main policy '{main_policy}' was not found in CSV; drawing methods only.")
+
+    group.extend(policy for policy in method_policies if policy not in group)
+    return group
+
+
+def prune_level(policy: str) -> float:
     for prefix in METHOD_PREFIXES:
         if policy.startswith(prefix):
             try:
-                return int(policy.rsplit("p", 1)[1])
+                suffix = policy.rsplit("_", 1)[1]
+                if suffix.startswith("p"):
+                    suffix = suffix[1:]
+                return float(suffix.replace("p", "."))
             except (IndexError, ValueError):
-                return 0
-    return 0
+                return 0.0
+    return 0.0
 
 
-def method_rank(policy: str, focus_policies: Sequence[str]) -> Tuple[int, int, str]:
+def method_rank(policy: str, focus_policies: Sequence[str]) -> Tuple[int, float, str]:
     if policy in focus_policies:
         return (0, focus_policies.index(policy), policy)
     if policy.startswith("distilled_"):
@@ -215,6 +279,17 @@ def records_for_policy(records: Sequence[Dict[str, Any]], policy: str) -> List[D
     )
 
 
+def generated_policy_color(policy: str) -> str:
+    level = max(0, min(prune_level(policy), 100)) / 100.0
+    if policy.startswith("pruned_"):
+        rgba = plt.get_cmap("viridis")(0.30 + 0.55 * level)
+        return mcolors.to_hex(rgba)
+    if policy.startswith("distilled_"):
+        rgba = plt.get_cmap("plasma")(0.22 + 0.58 * level)
+        return mcolors.to_hex(rgba)
+    return "#334155"
+
+
 def style_for_policy(policy: str, focus_policies: Sequence[str]) -> Dict[str, Any]:
     is_baseline = policy in BASELINE_POLICIES
     is_focus = policy in focus_policies
@@ -236,7 +311,7 @@ def style_for_policy(policy: str, focus_policies: Sequence[str]) -> Dict[str, An
         linestyle = "solid"
 
     return {
-        "color": POLICY_COLORS.get(policy, "#334155"),
+        "color": POLICY_COLORS.get(policy, generated_policy_color(policy)),
         "linewidth": linewidth,
         "markersize": markersize,
         "alpha": alpha,
@@ -392,6 +467,7 @@ def plot_interactive_metric(
     focus_policies: Sequence[str],
     spec: MetricSpec,
     out_dir: Path,
+    suffix: str = "",
 ) -> Optional[Path]:
     if go is None:
         return None
@@ -478,7 +554,7 @@ def plot_interactive_metric(
         gridcolor="rgba(203,213,225,0.75)",
     )
 
-    html_path = out_dir / f"{spec.stem}_interactive.html"
+    html_path = out_dir / f"{spec.stem}{suffix}_interactive.html"
     fig.write_html(
         html_path,
         include_plotlyjs=True,
@@ -498,7 +574,8 @@ def parse_prune_rates(raw_rates: str) -> List[float]:
         item = item.strip()
         if not item:
             continue
-        rate = float(item)
+        normalized = item[1:].replace("p", ".") if item.lower().startswith("p") else item
+        rate = float(normalized)
         if rate > 1.0:
             rate = rate / 100.0
         if not 0.0 <= rate < 1.0:
@@ -866,6 +943,26 @@ def main() -> None:
         for policy in all_policies
         if policy not in BASELINE_POLICIES
     ]
+    split_groups = [
+        (
+            "prune_vs_mappo",
+            choose_group_policies(
+                all_policies,
+                args.main_policy,
+                "pruned_",
+                parse_policy_list(args.pruned_policies),
+            ),
+        ),
+        (
+            "distill_vs_mappo",
+            choose_group_policies(
+                all_policies,
+                args.main_policy,
+                "distilled_",
+                parse_policy_list(args.distilled_policies),
+            ),
+        ),
+    ]
 
     plt.rcParams.update(
         {
@@ -882,29 +979,7 @@ def main() -> None:
     saved_paths: List[Path] = []
     show_std = args.show_std
     for spec in METRICS:
-        saved_paths.extend(
-            plot_static_metric(
-                records,
-                all_policies,
-                focus_policies,
-                spec,
-                args.out_dir,
-                show_std=show_std,
-            )
-        )
-        saved_paths.extend(
-            plot_static_metric(
-                records,
-                method_policies,
-                focus_policies,
-                spec,
-                args.out_dir,
-                suffix="_methods_zoom",
-                show_std=show_std,
-            )
-        )
-        if spec.zoom_ylim is not None:
-            zoom_suffix = f"_zoom_{int(abs(spec.zoom_ylim[0]))}_{int(abs(spec.zoom_ylim[1]))}"
+        if not args.only_split:
             saved_paths.extend(
                 plot_static_metric(
                     records,
@@ -912,24 +987,104 @@ def main() -> None:
                     focus_policies,
                     spec,
                     args.out_dir,
-                    suffix=zoom_suffix,
-                    ylim=spec.zoom_ylim,
                     show_std=show_std,
                 )
             )
 
-        if not args.no_html:
-            html_path = plot_interactive_metric(
-                records,
-                all_policies,
-                focus_policies,
-                spec,
-                args.out_dir,
+        if args.combined_methods and not args.only_split:
+            saved_paths.extend(
+                plot_static_metric(
+                    records,
+                    method_policies,
+                    focus_policies,
+                    spec,
+                    args.out_dir,
+                    suffix="_methods_zoom",
+                    show_std=show_std,
+                )
             )
-            if html_path is not None:
-                saved_paths.append(html_path)
 
-    if not args.no_model_deploy:
+        for group_name, group_policies in split_groups:
+            if len(group_policies) < 2:
+                continue
+            group_focus = tuple(policy for policy in focus_policies if policy in group_policies)
+            if args.main_policy in group_policies and args.main_policy not in group_focus:
+                group_focus = (args.main_policy, *group_focus)
+            saved_paths.extend(
+                plot_static_metric(
+                    records,
+                    group_policies,
+                    group_focus,
+                    spec,
+                    args.out_dir,
+                    suffix=f"_{group_name}",
+                    show_std=show_std,
+                )
+            )
+
+        if spec.zoom_ylim is not None:
+            zoom_suffix = f"_zoom_{int(abs(spec.zoom_ylim[0]))}_{int(abs(spec.zoom_ylim[1]))}"
+            if not args.only_split:
+                saved_paths.extend(
+                    plot_static_metric(
+                        records,
+                        all_policies,
+                        focus_policies,
+                        spec,
+                        args.out_dir,
+                        suffix=zoom_suffix,
+                        ylim=spec.zoom_ylim,
+                        show_std=show_std,
+                    )
+                )
+            for group_name, group_policies in split_groups:
+                if len(group_policies) < 2:
+                    continue
+                group_focus = tuple(policy for policy in focus_policies if policy in group_policies)
+                if args.main_policy in group_policies and args.main_policy not in group_focus:
+                    group_focus = (args.main_policy, *group_focus)
+                saved_paths.extend(
+                    plot_static_metric(
+                        records,
+                        group_policies,
+                        group_focus,
+                        spec,
+                        args.out_dir,
+                        suffix=f"_{group_name}{zoom_suffix}",
+                        ylim=spec.zoom_ylim,
+                        show_std=show_std,
+                    )
+                )
+
+        if not args.no_html:
+            if not args.only_split:
+                html_path = plot_interactive_metric(
+                    records,
+                    all_policies,
+                    focus_policies,
+                    spec,
+                    args.out_dir,
+                )
+                if html_path is not None:
+                    saved_paths.append(html_path)
+            for group_name, group_policies in split_groups:
+                if len(group_policies) < 2:
+                    continue
+                group_focus = tuple(policy for policy in focus_policies if policy in group_policies)
+                if args.main_policy in group_policies and args.main_policy not in group_focus:
+                    group_focus = (args.main_policy, *group_focus)
+                html_path = plot_interactive_metric(
+                    records,
+                    group_policies,
+                    group_focus,
+                    spec,
+                    args.out_dir,
+                    suffix=f"_{group_name}",
+                )
+                if html_path is not None:
+                    saved_paths.append(html_path)
+
+    if not args.no_model_deploy and not args.only_split:
         deploy_records = build_model_deployment_records(
             model_path=args.model_path,
             distilled_model_template=args.distilled_model_template,

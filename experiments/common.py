@@ -17,6 +17,42 @@ class Policy(Protocol):
         """Return one action per agent."""
 
 
+LOAD_CURVE_STYLES: Dict[str, Dict[str, Any]] = {
+    "mappo": {"color": "#111827", "linestyle": "-", "marker": "o", "linewidth": 2.8, "zorder": 8},
+    "qmix": {"color": "#7C3AED", "linestyle": "-", "marker": "P", "linewidth": 2.2, "zorder": 5},
+    "pruned": {"color": "#F97316", "linestyle": "--", "marker": "s", "linewidth": 2.0, "zorder": 6},
+    "distilled": {"color": "#16A34A", "linestyle": "-.", "marker": "^", "linewidth": 2.0, "zorder": 7},
+    "offload": {"color": "#DC2626", "linestyle": "-", "marker": "D", "linewidth": 2.0, "zorder": 4},
+    "greedy": {"color": "#9333EA", "linestyle": "--", "marker": "v", "linewidth": 2.0, "zorder": 3},
+    "local": {"color": "#92400E", "linestyle": "-", "marker": "X", "linewidth": 2.0, "zorder": 2},
+    "random": {"color": "#DB2777", "linestyle": ":", "marker": "o", "linewidth": 2.2, "zorder": 4},
+}
+
+GRID_STYLE: Dict[str, Any] = {
+    "color": "#D5DBE5",
+    "linewidth": 0.6,
+    "alpha": 0.82,
+}
+
+
+def apply_readable_grid(ax: plt.Axes) -> None:
+    ax.set_axisbelow(True)
+    ax.grid(True, which="major", **GRID_STYLE)
+
+
+def load_curve_style_key(policy_name: str) -> str:
+    for prefix in ("pruned", "distilled", "random"):
+        if policy_name.startswith(prefix):
+            return prefix
+    return policy_name
+
+
+def load_curve_draw_order(policies: List[str]) -> List[str]:
+    return [name for name in policies if name != "mappo"] + [
+        name for name in policies if name == "mappo"
+    ]
+
+
 def run_one_episode(env: MECEnv, policy: Policy) -> Dict[str, float]:
     data = env.reset()
     obs = data["obs"]
@@ -156,6 +192,7 @@ def plot_bar_dashboard(save_dir: str, results: List[Dict[str, Any]]) -> None:
         ax.set_xticklabels(policies, rotation=15)
         ax.set_ylabel(ylabel)
         ax.set_title(title)
+        apply_readable_grid(ax)
 
     fig.suptitle("Selected Policy Comparison", fontsize=14)
     fig.tight_layout()
@@ -182,28 +219,49 @@ def plot_load_curves(
     ]
 
     for metric_key, std_key, ylabel, filename in metrics:
-        plt.figure(figsize=(8, 5))
+        fig, ax = plt.subplots(figsize=(8, 5))
+        apply_readable_grid(ax)
 
-        for policy_name in policies:
+        legend_entries = []
+        for policy_name in load_curve_draw_order(policies):
             matched = sorted(
                 [r for r in all_results if r["policy"] == policy_name],
                 key=lambda r: r["load_factor"],
             )
+            if not matched:
+                continue
             x = np.array([r["avg_task_mbits"] for r in matched], dtype=np.float32)
             y = np.array([r[metric_key] for r in matched], dtype=np.float32)
             y_std = np.array([r[std_key] for r in matched], dtype=np.float32)
+            style = LOAD_CURVE_STYLES.get(
+                load_curve_style_key(policy_name),
+                {"marker": "o", "linewidth": 2.0, "zorder": 3},
+            )
 
-            plt.plot(x, y, marker="o", linewidth=2.0, label=policy_name)
-            plt.fill_between(x, y - y_std, y + y_std, alpha=0.10)
+            line = ax.plot(x, y, label=policy_name, **style)[0]
+            legend_entries.append((policy_name, line))
+            ax.fill_between(
+                x,
+                y - y_std,
+                y + y_std,
+                color=line.get_color(),
+                alpha=0.08,
+                zorder=max(float(style.get("zorder", 3)) - 1.0, 0.0),
+            )
 
-        plt.xlabel("Average Task Size (Mbits)")
-        plt.ylabel(ylabel)
-        plt.title(f"{ylabel} under Different Load Levels")
-        plt.legend()
-        plt.tight_layout()
+        ax.set_xlabel("Average Task Size (Mbits)")
+        ax.set_ylabel(ylabel)
+        ax.set_title(f"{ylabel} under Different Load Levels")
+        if legend_entries:
+            legend_by_name = {name: line for name, line in legend_entries}
+            ordered_names = [name for name in policies if name in legend_by_name]
+            ax.legend(
+                [legend_by_name[name] for name in ordered_names],
+                ordered_names,
+            )
+        fig.tight_layout()
 
         fig_path = os.path.join(save_dir, filename)
-        plt.savefig(fig_path, dpi=200)
-        plt.close()
+        fig.savefig(fig_path, dpi=200)
+        plt.close(fig)
         print(f"Saved figure: {fig_path}")
-

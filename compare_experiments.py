@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from dataclasses import replace
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -23,17 +24,13 @@ from experiments.mappo_policy import MAPPOPolicy
 from experiments.offload_policy import OffloadPolicy
 from experiments.pruned_mappo_policy import PrunedMAPPOPolicy
 from experiments.random_policy import RandomPolicy
+from QMIX.policy import QMIXPolicy
 
 
 PolicyFactory = Callable[[EnvConfig, argparse.Namespace], Any]
 DEFAULT_EXPERIMENT_NAMES = [
     "mappo",
-    "pruned_mappo",
-    "distilled_mappo",
-    "offload",
-    "greedy",
-    "local",
-    "random",
+    "qmix",
 ]
 DEFAULT_EXPERIMENT_STRING = ",".join(DEFAULT_EXPERIMENT_NAMES)
 RATE_SWEEP_BASE_EXPERIMENT_NAMES = ["mappo"]
@@ -42,6 +39,10 @@ RATE_SWEEP_BASELINE_NAMES = ["offload", "greedy", "local", "random"]
 
 def build_mappo(cfg: EnvConfig, args: argparse.Namespace) -> MAPPOPolicy:
     return MAPPOPolicy(cfg, model_path=args.model_path, device=args.device)
+
+
+def build_qmix(cfg: EnvConfig, args: argparse.Namespace) -> QMIXPolicy:
+    return QMIXPolicy(cfg, model_path=args.qmix_model_path, device=args.device)
 
 
 def build_pruned_mappo(cfg: EnvConfig, args: argparse.Namespace) -> PrunedMAPPOPolicy:
@@ -63,11 +64,12 @@ def build_distilled_mappo(cfg: EnvConfig, args: argparse.Namespace) -> PrunedMAP
 
 
 def build_random(cfg: EnvConfig, args: argparse.Namespace) -> RandomPolicy:
-    return RandomPolicy(seed=args.seed)
+    return RandomPolicy(seed=args.seed, offload_probability=args.random_offload_prob)
 
 
 EXPERIMENTS: Dict[str, PolicyFactory] = {
     "mappo": build_mappo,
+    "qmix": build_qmix,
     "pruned_mappo": build_pruned_mappo,
     "distilled_mappo": build_distilled_mappo,
     "local": lambda cfg, args: LocalPolicy(),
@@ -92,7 +94,8 @@ def parse_prune_rates(raw_rates: str) -> List[float]:
         item = item.strip()
         if not item:
             continue
-        rate = float(item)
+        normalized = item[1:].replace("p", ".") if item.lower().startswith("p") else item
+        rate = float(normalized)
         if rate > 1.0:
             rate = rate / 100.0
         if not 0.0 <= rate < 1.0:
@@ -119,6 +122,101 @@ def format_rate_path(template: str, rate: float) -> str:
     )
 
 
+def try_parse_rate_item(raw_item: str) -> Optional[float]:
+    item = raw_item.strip().lower()
+    if not item:
+        return None
+    if item.endswith(".pt"):
+        return None
+    if any(separator in item for separator in ("/", "\\")):
+        return None
+
+    try:
+        normalized = item[1:].replace("p", ".") if item.startswith("p") else item
+        rate = float(normalized)
+    except ValueError:
+        return None
+
+    if rate > 1.0:
+        rate = rate / 100.0
+    if not 0.0 <= rate < 1.0:
+        raise ValueError("Prune rates must be in [0, 1), or percentages in [0, 100).")
+    return rate
+
+
+def sanitize_policy_label(label: str, fallback: str) -> str:
+    normalized = re.sub(r"[^0-9A-Za-z_]+", "_", label.strip()).strip("_").lower()
+    return normalized or fallback
+
+
+def normalize_compressed_policy_name(prefix: str, label: str) -> str:
+    label = sanitize_policy_label(label, "model")
+    if label.startswith(f"{prefix}_"):
+        return label
+    return f"{prefix}_{label}"
+
+
+def infer_model_label(model_path: str, prefix: str, index: int) -> str:
+    stem = os.path.splitext(os.path.basename(model_path))[0].lower()
+    match = re.search(r"(?:^|_)(p\d+(?:p\d+)?)(?:_|$)", stem)
+    if match:
+        return match.group(1)
+
+    known_prefixes = [
+        "mappo_actor_pruned_distilled",
+        "mappo_actor_pruned",
+        f"{prefix}_mappo",
+        prefix,
+    ]
+    for known_prefix in known_prefixes:
+        if stem == known_prefix:
+            return "default"
+        if stem.startswith(f"{known_prefix}_"):
+            return sanitize_policy_label(stem[len(known_prefix) + 1 :], f"model{index}")
+
+    return sanitize_policy_label(stem, f"model{index}")
+
+
+def parse_model_specs(raw_specs: str, template: str, prefix: str) -> List[Tuple[str, str]]:
+    specs: List[Tuple[str, str]] = []
+    seen_names = set()
+
+    for index, item in enumerate(raw_specs.split(","), start=1):
+        item = item.strip()
+        if not item:
+            continue
+
+        label = ""
+        value = item
+        if "=" in item:
+            label, value = item.split("=", 1)
+            label = label.strip()
+            value = value.strip()
+            if not label or not value:
+                raise ValueError(
+                    f"Invalid {prefix} model spec '{item}'. Use rate, path, or label=path."
+                )
+
+        rate = try_parse_rate_item(value)
+        if rate is not None:
+            suffix = format_prune_suffix(rate)
+            model_path = format_rate_path(template, rate)
+            policy_name = normalize_compressed_policy_name(prefix, label or suffix)
+        else:
+            model_path = value
+            policy_name = normalize_compressed_policy_name(
+                prefix,
+                label or infer_model_label(model_path, prefix, index),
+            )
+
+        if policy_name in seen_names:
+            raise ValueError(f"Duplicate policy name generated from {prefix} specs: {policy_name}")
+        seen_names.add(policy_name)
+        specs.append((policy_name, model_path))
+
+    return specs
+
+
 def build_policies(
     cfg: EnvConfig,
     names: List[str],
@@ -127,32 +225,76 @@ def build_policies(
     return [EXPERIMENTS[name](cfg, args) for name in names]
 
 
-def build_prune_rate_policies(
+def build_compressed_model_policies(
+    cfg: EnvConfig,
+    specs: List[Tuple[str, str]],
+    args: argparse.Namespace,
+) -> List[Any]:
+    return [
+        PrunedMAPPOPolicy(
+            cfg,
+            model_path=model_path,
+            device=args.device,
+            policy_name=policy_name,
+        )
+        for policy_name, model_path in specs
+    ]
+
+
+def build_rate_policies(
     cfg: EnvConfig,
     rates: List[float],
     args: argparse.Namespace,
+    *,
+    prefix: str,
+    template: str,
 ) -> List[Any]:
     policies: List[Any] = []
     for rate in rates:
         suffix = format_prune_suffix(rate)
-        pruned_path = format_rate_path(args.pruned_model_template, rate)
-        distilled_path = format_rate_path(args.distilled_model_template, rate)
         policies.append(
             PrunedMAPPOPolicy(
                 cfg,
-                model_path=pruned_path,
+                model_path=format_rate_path(template, rate),
                 device=args.device,
-                policy_name=f"pruned_{suffix}",
+                policy_name=f"{prefix}_{suffix}",
             )
         )
-        policies.append(
-            PrunedMAPPOPolicy(
-                cfg,
-                model_path=distilled_path,
-                device=args.device,
-                policy_name=f"distilled_{suffix}",
-            )
+    return policies
+
+
+def build_compressed_mappo_policies(cfg: EnvConfig, args: argparse.Namespace) -> List[Any]:
+    if args.pruned_models or args.distilled_models:
+        specs = []
+        specs.extend(parse_model_specs(args.pruned_models, args.pruned_model_template, "pruned"))
+        specs.extend(
+            parse_model_specs(args.distilled_models, args.distilled_model_template, "distilled")
         )
+        return build_compressed_model_policies(cfg, specs, args)
+
+    prune_rates = parse_prune_rates(args.prune_rates)
+    if not prune_rates:
+        return []
+
+    policies: List[Any] = []
+    policies.extend(
+        build_rate_policies(
+            cfg,
+            prune_rates,
+            args,
+            prefix="pruned",
+            template=args.pruned_model_template,
+        )
+    )
+    policies.extend(
+        build_rate_policies(
+            cfg,
+            prune_rates,
+            args,
+            prefix="distilled",
+            template=args.distilled_model_template,
+        )
+    )
     return policies
 
 
@@ -161,18 +303,23 @@ def build_comparison_policies(
     experiment_names: List[str],
     args: argparse.Namespace,
 ) -> List[Any]:
-    prune_rates = parse_prune_rates(args.prune_rates)
-    if not prune_rates:
+    compressed_policies = build_compressed_mappo_policies(cfg, args)
+    if not compressed_policies:
         return build_policies(cfg, experiment_names, args)
 
     if args.experiments == DEFAULT_EXPERIMENT_STRING:
         policies = build_policies(cfg, RATE_SWEEP_BASE_EXPERIMENT_NAMES, args)
-        policies.extend(build_prune_rate_policies(cfg, prune_rates, args))
+        policies.extend(compressed_policies)
         policies.extend(build_policies(cfg, RATE_SWEEP_BASELINE_NAMES, args))
         return policies
 
-    policies = build_policies(cfg, experiment_names, args)
-    policies.extend(build_prune_rate_policies(cfg, prune_rates, args))
+    base_names = [
+        name
+        for name in experiment_names
+        if name not in {"pruned_mappo", "distilled_mappo"}
+    ]
+    policies = build_policies(cfg, base_names, args)
+    policies.extend(compressed_policies)
     return policies
 
 
@@ -269,6 +416,10 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("MAPPO_MODEL_PATH", os.path.join("results", "mappo_checkpoint.pt")),
     )
     parser.add_argument(
+        "--qmix-model-path",
+        default=os.getenv("QMIX_MODEL_PATH", os.path.join("QMIX", "results", "qmix_checkpoint.pt")),
+    )
+    parser.add_argument(
         "--pruned-model-path",
         default=os.getenv("PRUNED_MAPPO_MODEL_PATH", os.path.join("results", "mappo_actor_pruned.pt")),
     )
@@ -283,10 +434,28 @@ def parse_args() -> argparse.Namespace:
         "--prune-rates",
         default=os.getenv("PRUNE_RATES", ""),
         help=(
-            "Comma-separated pruning rates for a pruning-rate sweep, e.g. "
-            "0.10,0.25,0.40,0.50 or 10,25,40,50. When this is set and "
-            "--experiments is left at its default, the single pruned_mappo/"
-            "distilled_mappo entries are replaced by rate-specific policies."
+            "Legacy convenience option for a pruning-rate sweep, e.g. "
+            "0.10,0.25,0.40,0.50 or 10,25,40,50. This includes both pruned "
+            "and distilled actors for every rate unless --pruned-models or "
+            "--distilled-models is set."
+        ),
+    )
+    parser.add_argument(
+        "--pruned-models",
+        default=os.getenv("PRUNED_MAPPO_MODELS", ""),
+        help=(
+            "Comma-separated pruned actors to compare. Each item can be a rate "
+            "(10, p10, 0.10), a model path, or label=path. Rate items use "
+            "--pruned-model-template."
+        ),
+    )
+    parser.add_argument(
+        "--distilled-models",
+        default=os.getenv("DISTILLED_MAPPO_MODELS", ""),
+        help=(
+            "Comma-separated distilled actors to compare. Each item can be a rate "
+            "(10, p10, 0.10), a model path, or label=path. Rate items use "
+            "--distilled-model-template."
         ),
     )
     parser.add_argument(
@@ -319,6 +488,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--load-min", type=float, default=float(os.getenv("LOAD_FACTOR_MIN", "0.70")))
     parser.add_argument("--load-max", type=float, default=float(os.getenv("LOAD_FACTOR_MAX", "1.30")))
     parser.add_argument("--load-points", type=int, default=int(os.getenv("NUM_LOAD_POINTS", "13")))
+    parser.add_argument(
+        "--random-offload-prob",
+        type=float,
+        default=float(os.getenv("RANDOM_OFFLOAD_PROB", "0.50")),
+        help=(
+            "Probability that the random baseline selects offloading action 1. "
+            "The standard unbiased random baseline is 0.50."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -330,6 +508,8 @@ def main() -> None:
         raise ValueError("--load-points must be positive.")
     if args.load_min > args.load_max:
         raise ValueError("--load-min must be less than or equal to --load-max.")
+    if not 0.0 <= args.random_offload_prob <= 1.0:
+        raise ValueError("--random-offload-prob must be in [0, 1].")
 
     cfg = EnvConfig()
     experiment_names = parse_experiment_names(args.experiments)

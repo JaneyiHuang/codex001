@@ -33,6 +33,10 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("MAPPO_MODEL_PATH", os.path.join("results", "mappo_checkpoint.pt")),
     )
     parser.add_argument(
+        "--qmix-model-path",
+        default=os.getenv("QMIX_MODEL_PATH", os.path.join("QMIX", "results", "qmix_checkpoint.pt")),
+    )
+    parser.add_argument(
         "--pruned-model-path",
         default=os.getenv("PRUNED_MAPPO_MODEL_PATH", os.path.join("results", "mappo_actor_pruned.pt")),
     )
@@ -46,7 +50,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prune-rates",
         default=os.getenv("PRUNE_RATES", ""),
-        help="Comma-separated pruning rates, e.g. 0.10,0.25,0.40,0.50.",
+        help=(
+            "Legacy convenience option for a pruning-rate sweep, e.g. "
+            "0.10,0.25,0.40,0.50. This includes both pruned and distilled actors "
+            "for every rate unless --pruned-models or --distilled-models is set."
+        ),
+    )
+    parser.add_argument(
+        "--pruned-models",
+        default=os.getenv("PRUNED_MAPPO_MODELS", ""),
+        help=(
+            "Comma-separated pruned actors to compare. Each item can be a rate "
+            "(10, p10, 0.10), a model path, or label=path."
+        ),
+    )
+    parser.add_argument(
+        "--distilled-models",
+        default=os.getenv("DISTILLED_MAPPO_MODELS", ""),
+        help=(
+            "Comma-separated distilled actors to compare. Each item can be a rate "
+            "(10, p10, 0.10), a model path, or label=path."
+        ),
     )
     parser.add_argument(
         "--pruned-model-template",
@@ -72,6 +96,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--load-min", type=float, default=float(os.getenv("LOAD_FACTOR_MIN", "0.70")))
     parser.add_argument("--load-max", type=float, default=float(os.getenv("LOAD_FACTOR_MAX", "1.30")))
     parser.add_argument("--load-points", type=int, default=int(os.getenv("NUM_LOAD_POINTS", "13")))
+    parser.add_argument(
+        "--random-offload-prob",
+        type=float,
+        default=float(os.getenv("RANDOM_OFFLOAD_PROB", "0.50")),
+        help=(
+            "Probability that the random baseline selects offloading action 1. "
+            "The standard unbiased random baseline is 0.50."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -91,6 +124,8 @@ def main() -> None:
         raise ValueError("--load-points must be positive.")
     if args.load_min > args.load_max:
         raise ValueError("--load-min must be less than or equal to --load-max.")
+    if not 0.0 <= args.random_offload_prob <= 1.0:
+        raise ValueError("--random-offload-prob must be in [0, 1].")
 
     cfg = EnvConfig()
     experiment_names = parse_experiment_names(args.experiments)
