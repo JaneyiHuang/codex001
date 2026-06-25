@@ -37,7 +37,7 @@ python prune_mappo_actor.py --pruning-percentage 0.25
 会生成：
 
 ```text
-results\mappo_actor_pruned.pt
+results\mappo_actor_pruned_p25.pt
 ```
 
 我刚才测试的 25% 剪枝结果是：
@@ -92,10 +92,10 @@ Ran 4 commands
 ## Key Changes
 - 新增 `distill_mappo_actor.py`
   - 加载 teacher：`results/mappo_checkpoint.pt`
-  - 加载 student 初始模型：`results/mappo_actor_pruned.pt`
+  - 加载 student 初始模型：`results/mappo_actor_pruned_p25.pt`
   - 用 teacher 在 `MECEnv` 中运行若干 episode，收集所有 agent 的 obs
   - 用 teacher actor 输出 soft targets，训练 student actor
-  - 保存蒸馏后的模型到：`results/mappo_actor_pruned_distilled.pt`
+  - 保存蒸馏后的模型到：`results/mappo_actor_pruned_distilled_p25.pt`
 
 - 蒸馏训练默认参数
   - `--collect-episodes 100`
@@ -131,7 +131,7 @@ Ran 4 commands
     ```
   - 快速蒸馏：
     ```powershell
-    python distill_mappo_actor.py --collect-episodes 2 --epochs 1 --save-path results\mappo_actor_pruned_distilled.pt
+    python distill_mappo_actor.py --collect-episodes 2 --epochs 1 --save-path results\mappo_actor_pruned_distilled_p25.pt
     ```
   - 快速对比：
     ```powershell
@@ -166,7 +166,7 @@ Ran 4 commands
 我已经跑通了快速验证：
 
 ```powershell
-python distill_mappo_actor.py --collect-episodes 2 --epochs 1 --latency-repeats 200 --save-path results\mappo_actor_pruned_distilled.pt
+python distill_mappo_actor.py --collect-episodes 2 --epochs 1 --latency-repeats 200 --save-path results\mappo_actor_pruned_distilled_p25.pt
 ```
 
 快速结果：
@@ -233,7 +233,7 @@ python prune_mappo_actor.py --pruning-percentage 0.25
 会生成：
 
 ```text
-results\mappo_actor_pruned.pt
+results\mappo_actor_pruned_p25.pt
 ```
 
 **3. 蒸馏剪枝模型**
@@ -253,8 +253,8 @@ python distill_mappo_actor.py --collect-episodes 100 --epochs 30
 会生成：
 
 ```text
-results\mappo_actor_pruned_distilled.pt
-results\mappo_actor_pruned_distilled_log.csv
+results\mappo_actor_pruned_distilled_p25.pt
+results\mappo_actor_pruned_distilled_p25_log.csv
 ```
 
 **4. 固定场景对比**
@@ -310,7 +310,7 @@ python compare_experiments.py --experiments mappo,pruned_mappo,distilled_mappo -
 # 我按照你说的已经运行了，你觉得结果如何？
 
 
-我看了你这次的 [comparison_loads_summary.csv](D:/ZJUT/miniPaper/Code/codex001/results/compare_experiments/comparison_loads_summary.csv) 和 [蒸馏日志](D:/ZJUT/miniPaper/Code/codex001/results/mappo_actor_pruned_distilled_log.csv)，整体结果是**很好的**，尤其是蒸馏模块的效果很明确。
+我看了你这次的 [comparison_loads_summary.csv](D:/ZJUT/miniPaper/Code/codex001/results/compare_experiments/comparison_loads_summary.csv) 和 [蒸馏日志](D:/ZJUT/miniPaper/Code/codex001/results/mappo_actor_pruned_distilled_p25_log.csv)，整体结果是**很好的**，尤其是蒸馏模块的效果很明确。
 
 核心平均结果：
 

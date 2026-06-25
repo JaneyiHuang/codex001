@@ -259,12 +259,12 @@ def parse_args() -> argparse.Namespace:#命令行参数
     )
     parser.add_argument(
         "--student-model-path",
-        default=os.path.join("results", "mappo_actor_pruned.pt"),
+        default=os.path.join("results", "mappo_actor_pruned_p25.pt"),
         help="Path to the pruned actor checkpoint used as student initialization.",
     )
     parser.add_argument(
         "--save-path",
-        default=os.path.join("results", "mappo_actor_pruned_distilled.pt"),
+        default=os.path.join("results", "mappo_actor_pruned_distilled_p25.pt"),
         help="Path for the distilled pruned actor checkpoint.",
     )
     parser.add_argument("--collect-episodes", type=int, default=100)
@@ -408,4 +408,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

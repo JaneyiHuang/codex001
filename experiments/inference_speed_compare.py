@@ -58,13 +58,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pruned-model-path",
         type=Path,
-        default=PROJECT_ROOT / "results" / "mappo_actor_pruned.pt",
+        default=PROJECT_ROOT / "results" / "mappo_actor_pruned_p25.pt",
         help="Path to the pruned actor checkpoint.",
     )
     parser.add_argument(
         "--distilled-model-path",
         type=Path,
-        default=PROJECT_ROOT / "results" / "mappo_actor_pruned_distilled.pt",
+        default=PROJECT_ROOT / "results" / "mappo_actor_pruned_distilled_p25.pt",
         help="Path to the distilled pruned actor checkpoint.",
     )
     parser.add_argument(

@@ -170,7 +170,7 @@ def parse_args() -> argparse.Namespace:# 命令行参数，运行代码的时候
     )
     parser.add_argument(
         "--save-path",
-        default=os.path.join("results", "mappo_actor_pruned.pt"),
+        default=os.path.join("results", "mappo_actor_pruned_p25.pt"),
         help="Path for the pruned actor checkpoint.",
     )
     parser.add_argument(
@@ -247,4 +247,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -421,13 +421,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--pruned-model-path",
-        default=os.getenv("PRUNED_MAPPO_MODEL_PATH", os.path.join("results", "mappo_actor_pruned.pt")),
+        default=os.getenv(
+            "PRUNED_MAPPO_MODEL_PATH",
+            os.path.join("results", "mappo_actor_pruned_p25.pt"),
+        ),
     )
     parser.add_argument(
         "--distilled-model-path",
         default=os.getenv(
             "DISTILLED_MAPPO_MODEL_PATH",
-            os.path.join("results", "mappo_actor_pruned_distilled.pt"),
+            os.path.join("results", "mappo_actor_pruned_distilled_p25.pt"),
         ),
     )
     parser.add_argument(
