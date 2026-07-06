@@ -1,0 +1,122 @@
+{
+  "teacher_model_path": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\export\\mappo_teacher_actor.pt",
+  "teacher_runtime": "torch",
+  "student_model_path": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\temporal\\results\\mappo_actor_temporal_distilled_p25.pt",
+  "student_runtime": "torch",
+  "load_factor": 1.0,
+  "agreement": {
+    "episodes": 1,
+    "rollout_policy": "teacher",
+    "steps": 200,
+    "agent_comparisons": 800,
+    "agent_action_agreement": 0.9625,
+    "slot_action_agreement": 0.86,
+    "decision_agent_action_agreement": 1.0,
+    "reused_agent_action_agreement": 0.8351648351648352,
+    "decision_agent_comparisons": 618,
+    "reused_agent_comparisons": 182,
+    "student_model_call_step_ratio": 0.985,
+    "student_decision_agent_ratio": 0.7725,
+    "student_safety_interrupt_count": 534,
+    "teacher_local_student_local": 159,
+    "teacher_local_student_offload": 12,
+    "teacher_offload_student_local": 18,
+    "teacher_offload_student_offload": 611
+  },
+  "latency": {
+    "actor_forward": [
+      {
+        "policy": "teacher_mappo_actor",
+        "runtime": "torch",
+        "device": "cpu",
+        "parameters": 18178,
+        "actor_forward_iterations": 5,
+        "actor_forward_mean_ms": 0.17389998538419604,
+        "actor_forward_p50_ms": 0.17259997548535466,
+        "actor_forward_p95_ms": 0.18133999546989799,
+        "actor_forward_min_ms": 0.1653999788686633,
+        "actor_forward_max_ms": 0.1824999926611781
+      },
+      {
+        "policy": "student_temporal_distilled_mappo",
+        "runtime": "torch",
+        "device": "cpu",
+        "parameters": 0,
+        "actor_forward_iterations": 5,
+        "actor_forward_mean_ms": 0.2520600100979209,
+        "actor_forward_p50_ms": 0.2484000287950039,
+        "actor_forward_p95_ms": 0.2699000295251608,
+        "actor_forward_min_ms": 0.24009996559470892,
+        "actor_forward_max_ms": 0.2726000384427607
+      }
+    ],
+    "policy_step": [
+      {
+        "policy": "teacher_mappo_actor",
+        "policy_step_model_call_step_ratio": 1.0,
+        "policy_step_decision_agent_ratio": 1.0,
+        "policy_step_iterations": 5,
+        "policy_step_mean_ms": 0.16961999936029315,
+        "policy_step_p50_ms": 0.1686000032350421,
+        "policy_step_p95_ms": 0.1756999990902841,
+        "policy_step_min_ms": 0.1642999704927206,
+        "policy_step_max_ms": 0.17590000061318278
+      },
+      {
+        "policy": "student_temporal_distilled_mappo",
+        "policy_step_model_call_step_ratio": 0.2,
+        "policy_step_decision_agent_ratio": 0.2,
+        "policy_step_iterations": 5,
+        "policy_step_mean_ms": 0.2314800163730979,
+        "policy_step_p50_ms": 0.12500002048909664,
+        "policy_step_p95_ms": 0.5343200173228978,
+        "policy_step_min_ms": 0.10810000821948051,
+        "policy_step_max_ms": 0.6206000107340515
+      }
+    ]
+  },
+  "closed_loop": [
+    {
+      "policy": "teacher_mappo_actor",
+      "episodes": 1,
+      "elapsed_s": 0.13813609996577725,
+      "reward_mean": -155.00375000000005,
+      "reward_std": 0.0,
+      "delay_mean": 155.00375,
+      "delay_std": 0.0,
+      "drop_rate_mean": 0.1925,
+      "drop_rate_std": 0.0,
+      "offload_rate_mean": 0.78625,
+      "offload_rate_std": 0.0,
+      "energy_mean": 1.6313135252892972,
+      "energy_std": 0.0,
+      "model_call_step_ratio_mean": 1.0,
+      "model_call_step_ratio_std": 0.0,
+      "decision_agent_ratio_mean": 1.0,
+      "decision_agent_ratio_std": 0.0,
+      "safety_interrupt_count_mean": 0.0,
+      "safety_interrupt_count_std": 0.0
+    },
+    {
+      "policy": "student_temporal_distilled_mappo",
+      "episodes": 1,
+      "elapsed_s": 0.1559351000469178,
+      "reward_mean": -156.03249999999989,
+      "reward_std": 0.0,
+      "delay_mean": 156.0325,
+      "delay_std": 0.0,
+      "drop_rate_mean": 0.2,
+      "drop_rate_std": 0.0,
+      "offload_rate_mean": 0.785,
+      "offload_rate_std": 0.0,
+      "energy_mean": 1.6533789974451065,
+      "energy_std": 0.0,
+      "model_call_step_ratio_mean": 0.985,
+      "model_call_step_ratio_std": 0.0,
+      "decision_agent_ratio_mean": 0.7825,
+      "decision_agent_ratio_std": 0.0,
+      "safety_interrupt_count_mean": 550.0,
+      "safety_interrupt_count_std": 0.0
+    }
+  ]
+}

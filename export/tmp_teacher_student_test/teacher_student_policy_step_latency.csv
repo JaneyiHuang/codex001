@@ -1,0 +1,3 @@
+policy,policy_step_model_call_step_ratio,policy_step_decision_agent_ratio,policy_step_iterations,policy_step_mean_ms,policy_step_p50_ms,policy_step_p95_ms,policy_step_min_ms,policy_step_max_ms
+teacher_mappo_actor,1.0,1.0,5,0.16961999936029315,0.1686000032350421,0.1756999990902841,0.1642999704927206,0.17590000061318278
+student_temporal_distilled_mappo,0.2,0.2,5,0.2314800163730979,0.12500002048909664,0.5343200173228978,0.10810000821948051,0.6206000107340515

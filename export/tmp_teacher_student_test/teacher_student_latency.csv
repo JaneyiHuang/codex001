@@ -1,0 +1,3 @@
+policy,runtime,device,parameters,actor_forward_iterations,actor_forward_mean_ms,actor_forward_p50_ms,actor_forward_p95_ms,actor_forward_min_ms,actor_forward_max_ms
+teacher_mappo_actor,torch,cpu,18178,5,0.17389998538419604,0.17259997548535466,0.18133999546989799,0.1653999788686633,0.1824999926611781
+student_temporal_distilled_mappo,torch,cpu,0,5,0.2520600100979209,0.2484000287950039,0.2699000295251608,0.24009996559470892,0.2726000384427607

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Jetson Nano inference helper for mappo_actor_temporal_distilled_p25.pt.
+Jetson Nano inference helper for mappo_actor_temporal_distilled_p25.
 
 This script does not generate a random environment for deployment. It converts
 real MEC system measurements into the normalized observation format used during
 training, then runs the temporal-distilled MAPPO actor.
 
-Typical smoke test on Jetson:
+Typical PyTorch smoke test on Jetson:
     python3 export/jetson_infer.py --demo
+
+Typical ONNX Runtime smoke test on Jetson:
+    python3 export/jetson_infer.py --runtime onnx --demo
 
 Typical one-step JSON input:
     python3 export/jetson_infer.py --obs-json current_state.json
@@ -27,7 +30,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-MODEL_FILENAME = "mappo_actor_temporal_distilled_p25.pt"
+MODEL_BASENAME = "mappo_actor_temporal_distilled_p25"
+TORCH_MODEL_FILENAME = MODEL_BASENAME + ".pt"
+ONNX_MODEL_FILENAME = MODEL_BASENAME + ".onnx"
+ONNX_METADATA_FILENAME = MODEL_BASENAME + ".onnx.meta.json"
+
+# Backward-compatible name used by earlier deployment notes.
+MODEL_FILENAME = TORCH_MODEL_FILENAME
 
 
 def load_checkpoint(model_path, device):
@@ -35,6 +44,102 @@ def load_checkpoint(model_path, device):
         return torch.load(model_path, map_location=device, weights_only=True)
     except TypeError:
         return torch.load(model_path, map_location=device)
+
+
+def load_json_file(path):
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def resolve_metadata_path(model_path, metadata_path=None):
+    if metadata_path:
+        return metadata_path
+    root, ext = os.path.splitext(model_path)
+    if ext.lower() == ".onnx":
+        return root + ".onnx.meta.json"
+    return model_path + ".meta.json"
+
+
+def load_onnx_metadata(model_path, metadata_path=None):
+    path = resolve_metadata_path(model_path, metadata_path)
+    if path and os.path.exists(path):
+        data = load_json_file(path)
+        if not isinstance(data, dict):
+            raise ValueError("ONNX metadata must be a JSON object: {}".format(path))
+        return data
+    return {}
+
+
+def temporal_outputs_from_logits(action_logits, repeat_raw, repeat_scale, max_repeat):
+    action_logits = np.asarray(action_logits, dtype=np.float32)
+    repeat_raw = np.asarray(repeat_raw, dtype=np.float32)
+    actions = np.argmax(action_logits, axis=-1).astype(np.int64)
+    repeats = np.rint(np.maximum(repeat_raw, 0.0) * float(repeat_scale)).astype(np.int64)
+    repeats = np.clip(repeats, 0, int(max_repeat)).astype(np.int64)
+    return actions, repeats
+
+
+def import_onnxruntime():
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise ImportError(
+            "Could not import onnxruntime: {}. Install a working onnxruntime "
+            "package on Jetson before using --runtime onnx, or use the default "
+            "PyTorch runtime.".format(exc)
+        )
+    return ort
+
+
+def select_onnx_providers(device="auto", provider_mode="auto"):
+    ort = import_onnxruntime()
+
+    available = ort.get_available_providers()
+    providers = []
+
+    def add_provider(name):
+        if name in available and name not in providers:
+            providers.append(name)
+
+    provider_mode = str(provider_mode or "auto").lower()
+    device = str(device or "auto").lower()
+
+    if provider_mode == "cpu":
+        add_provider("CPUExecutionProvider")
+    elif provider_mode == "cuda":
+        add_provider("CUDAExecutionProvider")
+        add_provider("CPUExecutionProvider")
+        if "CUDAExecutionProvider" not in providers:
+            raise ValueError(
+                "CUDAExecutionProvider is not available in this onnxruntime build. "
+                "Available providers: {}".format(available)
+            )
+    elif provider_mode == "auto":
+        if device != "cpu":
+            add_provider("CUDAExecutionProvider")
+        add_provider("CPUExecutionProvider")
+    else:
+        raise ValueError("Unsupported ONNX provider mode: {}".format(provider_mode))
+
+    if not providers:
+        raise RuntimeError("No usable ONNX Runtime provider found. Available providers: {}".format(available))
+    return providers
+
+
+def create_onnx_session(model_path, device="auto", provider_mode="auto"):
+    ort = import_onnxruntime()
+    providers = select_onnx_providers(device=device, provider_mode=provider_mode)
+    session = ort.InferenceSession(model_path, providers=providers)
+    inputs = session.get_inputs()
+    if not inputs:
+        raise ValueError("ONNX model has no inputs: {}".format(model_path))
+
+    input_name = inputs[0].name
+    input_shape = inputs[0].shape
+    inferred_obs_dim = None
+    if input_shape and isinstance(input_shape[-1], int):
+        inferred_obs_dim = int(input_shape[-1])
+    return session, input_name, session.get_providers(), inferred_obs_dim
 
 
 class NormalizationConfig(object):
@@ -114,6 +219,9 @@ class JetsonTemporalPolicy(object):
         self,
         model_path,
         device="auto",
+        runtime="torch",
+        metadata_path=None,
+        onnx_provider="auto",
         normalization=None,
         repeat_scale=None,
         max_repeat=None,
@@ -123,38 +231,88 @@ class JetsonTemporalPolicy(object):
         safe_obs_change_threshold=0.35,
         safe_channel_drop_threshold=0.35,
     ):
-        if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = device
+        self.runtime = str(runtime or "torch").lower()
+        self.model_path = model_path
+        self.actor = None
+        self.onnx_session = None
+        self.onnx_input_name = None
+        self.onnx_providers = []
 
-        ckpt = load_checkpoint(model_path, self.device)
-        if not isinstance(ckpt, dict):
-            raise ValueError("Expected a checkpoint dict, got: {}".format(type(ckpt)))
-        if not ckpt.get("temporal_actor", False):
-            raise ValueError("Checkpoint is not a temporal actor checkpoint.")
+        if self.runtime == "torch":
+            if device == "auto":
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.device = device
 
-        hidden_dims = ckpt.get("actor_hidden_dims")
-        if hidden_dims is None:
-            raise ValueError("Checkpoint is missing actor_hidden_dims.")
+            ckpt = load_checkpoint(model_path, self.device)
+            if not isinstance(ckpt, dict):
+                raise ValueError("Expected a checkpoint dict, got: {}".format(type(ckpt)))
+            if not ckpt.get("temporal_actor", False):
+                raise ValueError("Checkpoint is not a temporal actor checkpoint.")
 
-        self.normalization = normalization or NormalizationConfig(
-            n_agents=ckpt.get("n_agents", 4),
-            obs_dim=ckpt.get("obs_dim", 10),
-        )
-        self.n_agents = int(ckpt.get("n_agents", self.normalization.n_agents))
-        self.obs_dim = int(ckpt.get("obs_dim", self.normalization.obs_dim))
-        self.n_actions = int(ckpt.get("n_actions", 2))
+            hidden_dims = ckpt.get("actor_hidden_dims")
+            if hidden_dims is None:
+                raise ValueError("Checkpoint is missing actor_hidden_dims.")
 
-        self.actor = TemporalActor(
-            obs_dim=self.obs_dim,
-            n_actions=self.n_actions,
-            hidden_dims=hidden_dims,
-        ).to(self.device)
-        self.actor.load_state_dict(ckpt["actor"])
-        self.actor.eval()
+            self.normalization = normalization or NormalizationConfig(
+                n_agents=ckpt.get("n_agents", 4),
+                obs_dim=ckpt.get("obs_dim", 10),
+            )
+            self.n_agents = int(ckpt.get("n_agents", self.normalization.n_agents))
+            self.obs_dim = int(ckpt.get("obs_dim", self.normalization.obs_dim))
+            self.n_actions = int(ckpt.get("n_actions", 2))
 
-        self.repeat_scale = float(repeat_scale if repeat_scale is not None else ckpt.get("repeat_scale", 5.0))
-        self.max_repeat = int(max_repeat if max_repeat is not None else ckpt.get("max_repeat", 5))
+            self.actor = TemporalActor(
+                obs_dim=self.obs_dim,
+                n_actions=self.n_actions,
+                hidden_dims=hidden_dims,
+            ).to(self.device)
+            self.actor.load_state_dict(ckpt["actor"])
+            self.actor.eval()
+
+            self.repeat_scale = float(repeat_scale if repeat_scale is not None else ckpt.get("repeat_scale", 5.0))
+            self.max_repeat = int(max_repeat if max_repeat is not None else ckpt.get("max_repeat", 5))
+        elif self.runtime == "onnx":
+            metadata = load_onnx_metadata(model_path, metadata_path)
+            (
+                self.onnx_session,
+                self.onnx_input_name,
+                self.onnx_providers,
+                inferred_obs_dim,
+            ) = create_onnx_session(model_path, device=device, provider_mode=onnx_provider)
+
+            metadata_obs_dim = metadata.get("obs_dim", inferred_obs_dim if inferred_obs_dim is not None else 10)
+            normalization_data = metadata.get("normalization", {})
+            if not isinstance(normalization_data, dict):
+                normalization_data = {}
+            self.normalization = normalization or NormalizationConfig(
+                n_agents=metadata.get("n_agents", 4),
+                obs_dim=metadata_obs_dim,
+                task_max_bits=normalization_data.get("task_max_bits", 6e6),
+                e_max=normalization_data.get("e_max", 5.0),
+                h_max=normalization_data.get("h_max", 0.5),
+                q_loc_max=normalization_data.get("q_loc_max", 1e7),
+                q_tx_max=normalization_data.get("q_tx_max", 1e7),
+                q_edge_max=normalization_data.get("q_edge_max", 4e7),
+                episode_limit=normalization_data.get("episode_limit", 200),
+                h_norm_clip=normalization_data.get("h_norm_clip", 10.0),
+            )
+            self.n_agents = int(metadata.get("n_agents", self.normalization.n_agents))
+            self.obs_dim = int(metadata.get("obs_dim", self.normalization.obs_dim))
+            if inferred_obs_dim is not None and self.obs_dim != inferred_obs_dim:
+                raise ValueError(
+                    "ONNX metadata obs_dim={} does not match model input obs_dim={}".format(
+                        self.obs_dim,
+                        inferred_obs_dim,
+                    )
+                )
+            self.n_actions = int(metadata.get("n_actions", 2))
+            self.repeat_scale = float(
+                repeat_scale if repeat_scale is not None else metadata.get("repeat_scale", 5.0)
+            )
+            self.max_repeat = int(max_repeat if max_repeat is not None else metadata.get("max_repeat", 5))
+            self.device = "onnxruntime:{}".format(",".join(self.onnx_providers))
+        else:
+            raise ValueError("Unsupported runtime: {}".format(runtime))
 
         self.safety_enabled = bool(safety_enabled)
         self.safe_energy_min = float(safe_energy_min)
@@ -210,6 +368,18 @@ class JetsonTemporalPolicy(object):
         obs = np.asarray(obs, dtype=np.float32)
         if obs.ndim != 2 or obs.shape[1] != self.obs_dim:
             raise ValueError("Expected obs batch shape (N, {}), got {}".format(self.obs_dim, obs.shape))
+
+        if self.runtime == "onnx":
+            ort_outputs = self.onnx_session.run(None, {self.onnx_input_name: obs})
+            if len(ort_outputs) < 2:
+                raise ValueError("Expected ONNX outputs: action_logits, repeat_raw")
+            return temporal_outputs_from_logits(
+                ort_outputs[0],
+                ort_outputs[1],
+                repeat_scale=self.repeat_scale,
+                max_repeat=self.max_repeat,
+            )
+
         obs_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device)
         with torch.no_grad():
             actions, repeats = self.actor.predict_temporal(
@@ -283,32 +453,59 @@ class JetsonTemporalPolicy(object):
         return bool(energy_low or queue_pressure or obs_changed or channel_drop)
 
 
-def resolve_model_path(model_path):
+def resolve_model_path(model_path, runtime="torch"):
     if model_path:
         return model_path
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.join(os.getcwd(), "temporal", "results", MODEL_FILENAME),
-        os.path.join(script_dir, "..", "temporal", "results", MODEL_FILENAME),
-        os.path.join(script_dir, MODEL_FILENAME),
-    ]
+    if runtime == "onnx":
+        filename = ONNX_MODEL_FILENAME
+        candidates = [
+            os.path.join(os.getcwd(), "export", filename),
+            os.path.join(script_dir, filename),
+            os.path.join(os.getcwd(), "temporal", "results", filename),
+            os.path.join(script_dir, "..", "temporal", "results", filename),
+        ]
+    else:
+        filename = TORCH_MODEL_FILENAME
+        candidates = [
+            os.path.join(os.getcwd(), "temporal", "results", filename),
+            os.path.join(script_dir, "..", "temporal", "results", filename),
+            os.path.join(script_dir, filename),
+        ]
     for candidate in candidates:
         if os.path.exists(candidate):
             return os.path.abspath(candidate)
     return candidates[0]
 
 
+def resolve_runtime(runtime, model_path):
+    runtime = str(runtime or "torch").lower()
+    if runtime != "auto":
+        return runtime
+    if model_path and os.path.splitext(model_path)[1].lower() == ".onnx":
+        return "onnx"
+    return "torch"
+
+
+def resolve_onnx_metadata_for_model(model_path, metadata_path):
+    if metadata_path:
+        return metadata_path
+    candidate = resolve_metadata_path(model_path)
+    if os.path.exists(candidate):
+        return candidate
+    return None
+
+
 def load_state_json(path):
-    with open(path, "r") as f:
-        data = json.load(f)
+    data = load_json_file(path)
     if "agents" not in data or "edge" not in data:
         raise ValueError("JSON must contain top-level keys: agents, edge")
     return data["agents"], data["edge"]
 
 
 def synchronize_device(policy):
-    if str(policy.device).startswith("cuda") and torch.cuda.is_available():
+    if getattr(policy, "runtime", "torch") == "torch" and str(policy.device).startswith("cuda") and torch.cuda.is_available():
         torch.cuda.synchronize()
 
 
@@ -425,8 +622,16 @@ def demo_state():
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run temporal MAPPO actor inference on Jetson Nano.")
-    parser.add_argument("--model-path", default=None, help="Path to mappo_actor_temporal_distilled_p25.pt.")
+    parser.add_argument("--model-path", default=None, help="Path to the .pt checkpoint or exported .onnx model.")
+    parser.add_argument("--metadata-path", default=None, help="Optional ONNX metadata JSON path.")
+    parser.add_argument("--runtime", default="torch", choices=["auto", "torch", "onnx"], help="Inference runtime.")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"], help="Inference device.")
+    parser.add_argument(
+        "--onnx-provider",
+        default="auto",
+        choices=["auto", "cpu", "cuda"],
+        help="ONNX Runtime execution provider preference.",
+    )
     parser.add_argument("--obs-json", default=None, help="JSON file containing real agent and edge states.")
     parser.add_argument("--demo", action="store_true", help="Run one smoke-test step using fixed example values.")
     parser.add_argument("--disable-safety", action="store_true", help="Disable temporal safety interrupts.")
@@ -438,9 +643,10 @@ def parse_args():
 
 def main():
     args = parse_args()
-    model_path = resolve_model_path(args.model_path)
+    runtime = resolve_runtime(args.runtime, args.model_path)
+    model_path = resolve_model_path(args.model_path, runtime=runtime)
     if not os.path.exists(model_path):
-        raise FileNotFoundError("Model checkpoint not found: {}".format(model_path))
+        raise FileNotFoundError("Model file not found: {}".format(model_path))
 
     if args.demo:
         agents, edge = demo_state()
@@ -452,6 +658,9 @@ def main():
     policy = JetsonTemporalPolicy(
         model_path=model_path,
         device=args.device,
+        runtime=runtime,
+        metadata_path=resolve_onnx_metadata_for_model(model_path, args.metadata_path),
+        onnx_provider=args.onnx_provider,
         safety_enabled=not args.disable_safety,
     )
     result = policy.select_actions(agents, edge)
@@ -467,10 +676,13 @@ def main():
 
     output = {
         "model_path": model_path,
+        "runtime": policy.runtime,
         "device": policy.device,
         "action_meaning": {"0": "local_compute", "1": "offload_to_edge"},
         "result": result,
     }
+    if policy.runtime == "onnx":
+        output["onnx_providers"] = policy.onnx_providers
     if benchmark is not None:
         output["benchmark"] = benchmark
 

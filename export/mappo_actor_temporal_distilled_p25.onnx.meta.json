@@ -1,0 +1,30 @@
+{
+  "format": "temporal_mappo_actor_onnx_metadata",
+  "model_name": "mappo_actor_temporal_distilled_p25",
+  "source_checkpoint": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\temporal\\results\\mappo_actor_temporal_distilled_p25.pt",
+  "onnx_model": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\export\\mappo_actor_temporal_distilled_p25.onnx",
+  "input_name": "obs",
+  "output_names": [
+    "action_logits",
+    "repeat_raw"
+  ],
+  "n_agents": 4,
+  "obs_dim": 10,
+  "n_actions": 2,
+  "actor_hidden_dims": [
+    96,
+    96
+  ],
+  "repeat_scale": 5.0,
+  "max_repeat": 5,
+  "normalization": {
+    "task_max_bits": 6000000.0,
+    "e_max": 5.0,
+    "h_max": 0.5,
+    "q_loc_max": 10000000.0,
+    "q_tx_max": 10000000.0,
+    "q_edge_max": 40000000.0,
+    "episode_limit": 200.0,
+    "h_norm_clip": 10.0
+  }
+}
