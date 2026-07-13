@@ -1,0 +1,9 @@
+metric,label,pc_student,hil_nano,diff_hil_minus_pc,relative_diff
+average_reward,Average reward,-0.9790985416666665,-0.9790985416666665,0.0,0.0
+average_delay,Average delay,195.81970833333332,195.81970833333332,0.0,0.0
+average_drop_rate,Drop rate,0.21041666666666667,0.21041666666666667,0.0,0.0
+average_offload_rate,Offload rate,0.770875,0.770875,0.0,0.0
+target_action_agreement,Teacher agreement,0.9984999895095825,0.9984999895095825,0.0,0.0
+joint_action_match_rate_pc_vs_hil,Joint action match,1.0,1.0,0.0,0.0
+target_action_match_rate_pc_vs_hil,Target action match,1.0,1.0,0.0,0.0
+delay_match_rate_pc_vs_hil,Delay match,1.0,1.0,0.0,0.0

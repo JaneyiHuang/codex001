@@ -1,0 +1,47 @@
+{
+  "pc_summary": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\results\\pc_student_baseline_20x300\\pc_student_baseline_summary.json",
+  "hil_summary": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\results\\hil_single_ue_onnx_nano_student_others\\hil_single_ue_summary.json",
+  "pc_total_steps": 6000,
+  "hil_total_steps": 6000,
+  "pc_average_pc_student_infer_ms": 0.19752006576163694,
+  "hil_average_nano_infer_ms": 1.3216733495027408,
+  "hil_average_round_trip_ms": 47.86864076721637,
+  "metrics": [
+    {
+      "metric": "average_reward",
+      "pc_student": -0.9790985416666665,
+      "hil_nano": -0.9790985416666665,
+      "diff_hil_minus_pc": 0.0,
+      "relative_diff": 0.0
+    },
+    {
+      "metric": "average_delay",
+      "pc_student": 195.81970833333332,
+      "hil_nano": 195.81970833333332,
+      "diff_hil_minus_pc": 0.0,
+      "relative_diff": 0.0
+    },
+    {
+      "metric": "average_drop_rate",
+      "pc_student": 0.21041666666666667,
+      "hil_nano": 0.21041666666666667,
+      "diff_hil_minus_pc": 0.0,
+      "relative_diff": 0.0
+    },
+    {
+      "metric": "average_offload_rate",
+      "pc_student": 0.770875,
+      "hil_nano": 0.770875,
+      "diff_hil_minus_pc": 0.0,
+      "relative_diff": 0.0
+    },
+    {
+      "metric": "target_action_agreement",
+      "pc_student": 0.9984999895095825,
+      "hil_nano": 0.9984999895095825,
+      "diff_hil_minus_pc": 0.0,
+      "relative_diff": 0.0
+    }
+  ],
+  "note": "diff_hil_minus_pc = HIL Nano result - pure PC student baseline. The HIL round-trip time is reported separately and is not included in simulated MEC delay."
+}

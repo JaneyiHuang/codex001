@@ -1,0 +1,20 @@
+{
+  "episodes": 20,
+  "steps_per_episode": 300,
+  "num_users": 4,
+  "target_agent_id": 0,
+  "other_policy": "student",
+  "average_reward": -0.9790985416666665,
+  "average_delay": 195.81970833333332,
+  "average_drop_rate": 0.21041666666666667,
+  "average_offload_rate": 0.770875,
+  "average_nano_infer_ms": 1.3216733495027408,
+  "average_round_trip_ms": 47.86864076721637,
+  "target_action_agreement": 0.9984999895095825,
+  "total_steps": 6000,
+  "teacher_model_path": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\export\\mappo_teacher_actor.pt",
+  "student_model_path_pc": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\temporal\\results\\mappo_actor_temporal_distilled_p25.pt",
+  "csv_path": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\results\\hil_single_ue_onnx_nano_student_others\\hil_single_ue_steps.csv",
+  "summary_path": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\results\\hil_single_ue_onnx_nano_student_others\\hil_single_ue_summary.json",
+  "note": "reward/delay/drop/offload_rate are simulated MEC metrics from PC env.step(); nano_infer_ms is pure Nano ONNX inference time; round_trip_ms is PC-Nano TCP communication latency and is not added to simulated MEC delay."
+}

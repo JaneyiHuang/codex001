@@ -1,0 +1,19 @@
+{
+  "episodes": 20,
+  "steps_per_episode": 300,
+  "num_users": 4,
+  "target_agent_id": 0,
+  "policy": "pc_all_student",
+  "average_reward": -0.9790985416666665,
+  "average_delay": 195.81970833333332,
+  "average_drop_rate": 0.21041666666666667,
+  "average_offload_rate": 0.770875,
+  "average_pc_student_infer_ms": 0.19752006576163694,
+  "target_action_agreement": 0.9984999895095825,
+  "total_steps": 6000,
+  "teacher_model_path": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\export\\mappo_teacher_actor.pt",
+  "student_model_path_pc": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\temporal\\results\\mappo_actor_temporal_distilled_p25.pt",
+  "csv_path": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\results\\pc_student_baseline_20x300\\pc_student_baseline_steps.csv",
+  "summary_path": "D:\\ZJUT\\miniPaper\\Code\\\u3010v2.2\u3011\u5728\u91cd\u8981\u5907\u4efd\u4e0a\u52a0\u5165 \u65f6\u95f4\u526a\u679d\u7684\u64cd\u4f5c\\codex001\\results\\pc_student_baseline_20x300\\pc_student_baseline_summary.json",
+  "note": "Pure-PC baseline: all 4 UEs are simulated and use the lightweight student actor every slot. Temporal repeat/skip is not used, matching the first-version HIL protocol."
+}
